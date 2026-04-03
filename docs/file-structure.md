@@ -2,6 +2,9 @@
 # File Structure for CloudBin
 ---
 
+This document outlines the file structure and organization of the CloudBin project, including the purpose of each directory and key files.
+
+```
 Cloudbin/
 ├── api-gateway/
 ├── auth-service/
@@ -14,7 +17,7 @@ Cloudbin/
 ├── docker/
 ├── docker-compose.yml
 ├── docs/architecture.md
-
+```
 Example script under `scripts/`:
 
 - deploy-all-nodes.sh
