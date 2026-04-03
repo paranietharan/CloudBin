@@ -46,31 +46,47 @@ Suggested deployment script location:
 scripts/deploy-all-nodes.sh
 ```
 
+## Environment Files
+
+Environment templates are now module-specific:
+
+- `api-gateway/.env.example`
+- `auth-service/.env.example`
+- `migrations/.env.example`
+
+Copy each one to `.env` inside the same folder before running that module.
+
+```bash
+cp api-gateway/.env.example api-gateway/.env
+cp auth-service/.env.example auth-service/.env
+cp migrations/.env.example migrations/.env
+```
+
 ## Endpoints
 
 ### Auth endpoints
-- api/v1/login
-- api/v1/register
-- api/v1/logout
-- api/v1/get-user
-- api/v1/update-user
-- api/v1/delete-user
-- api/v1/admin/deactivate-user
-- api/v1/admin/delete-user
-- api/v1/create-token
-- api/v1/list-tokens
-- api/v1/delete-token
-- api/v1/get-user-files
+- `/api/v1/login`
+- `/api/v1/register`
+- `/api/v1/logout`
+- `/api/v1/get-user`
+- `/api/v1/update-user`
+- `/api/v1/delete-user`
+- `/api/v1/admin/deactivate-user`
+- `/api/v1/admin/delete-user`
+- `/api/v1/create-token`
+- `/api/v1/list-tokens`
+- `/api/v1/delete-token`
+- `/api/v1/get-user-files`
 
-Token creation is an authenticated flow: the user registers, logs in, then calls `api/v1/create-token` to create additional JWT tokens for other services or integrations.
+Token creation is an authenticated flow: the user registers, logs in, then calls `/api/v1/create-token` to create additional JWT tokens for other services or integrations.
 
 ### File Management endpoints
-- api/v1/upload-file
-- api/v1/download-file
-- api/v1/delete-file
-- api/v1/hide-file
-- api/v1/admin/hide-file
-- api/v1/admin/delete-file
+- `/api/v1/upload-file`
+- `/api/v1/download-file`
+- `/api/v1/delete-file`
+- `/api/v1/hide-file`
+- `/api/v1/admin/hide-file`
+- `/api/v1/admin/delete-file`
 
 --------------------------------
 ## Architecture at a Glance
@@ -107,65 +123,47 @@ See [docs/architecture.md](docs/architecture.md) for a full breakdown.
  
 ```bash
 # Register a user
-curl -X POST http://localhost:8080/auth/register \
+curl -X POST http://localhost:8080/api/v1/register \
   -H "Content-Type: application/json" \
   -d '{"email": "parani@parani.com", "password": "secret"}'
-
-# Verify the user otp
-curl -X Post http://localhost:8080/auth/verify-otp \
-  -H "Content-Type: application/json" \
-  -d '{"email": "parani@parani.com", "otp": "123456"}'
  
 # Login to get a JWT
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/login \
   -H "Content-Type: application/json" \
   -d '{"email": "parani@parani.com", "password": "secret"}' | jq -r '.token')
 
 # Update the user details
-curl -X PUT http://localhost:8080/auth/update-user \
+curl -X PUT http://localhost:8080/api/v1/update-user \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"email": "parani@parani.com", "password": "secret"}'
 
 # Create a service token
-curl -X POST http://localhost:8080/auth/create-token \
+curl -X POST http://localhost:8080/api/v1/create-token \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"token_name": "analytics-service", "expires_in": "30d"}'
+  -d '{"token_name": "analytics-service"}'
 
 # List issued tokens
-curl -X GET http://localhost:8080/auth/list-tokens \
+curl -X GET http://localhost:8080/api/v1/list-tokens \
   -H "Authorization: Bearer $TOKEN"
 
 # Delete a token
-curl -X DELETE http://localhost:8080/auth/delete-token \
+curl -X DELETE http://localhost:8080/api/v1/delete-token \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"token_id": "123456"}'
 
 # Delete the user
-curl -X DELETE http://localhost:8080/auth/delete-user \
+curl -X DELETE http://localhost:8080/api/v1/delete-user \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"email": "parani@parani.com", "password": "secret"}'
 
-# Confirm User deletion by verify the otp sent to the email
-curl -X Post http://localhost:8080/auth/verify-otp \
-  -H "Content-Type: application/json" \
-  -d '{"email": "parani@parani.com", "otp": "123456"}'
-
 # List all the files in the user
-curl -X GET http://localhost:8080/auth/get-user-files \
+curl -X GET http://localhost:8080/api/v1/get-user-files \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" 
-
-# Change the Permissions of the file
-curl -X PUT http://localhost:8080/auth/update-file-permissions \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"file_id": "123456", "permissions": "public-read"}'
-
-(permissions can be public-read or private-read)
  
 # Upload a file
 curl -X PUT http://localhost:8080/objects/my-file.txt \
