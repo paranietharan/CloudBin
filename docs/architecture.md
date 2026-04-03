@@ -50,6 +50,9 @@ Client
 
 - Handles register, login, logout, OTP verification, profile updates, and user deletion.
 - Stores and reads identity data only from `auth_db`.
+- Supports multiple JWT tokens per owner so the same account can integrate with multiple services.
+- Supports token listing and token revocation for the owner.
+- Supports admin actions to deactivate or delete users.
 
 ### Object API
 
@@ -57,6 +60,8 @@ Client
 - Computes primary and replica nodes using modulo hashing.
 - Stores object metadata only in `object_db`.
 - Reads configured storage node list from environment values.
+- Supports hide and delete operations for both owners and admins.
+- Enforces visibility so hidden resources are visible only to the owner and admins.
 
 ### Storage Node Service
 
@@ -98,6 +103,21 @@ This keeps domain ownership clear and reduces cross-service coupling.
 3. Object API deletes object from both nodes.
 4. Object API removes metadata row from `object_db`.
 
+### Hide Resource
+
+1. Owner or admin sends a hide request through API Gateway.
+2. Object API marks the resource as hidden in `object_db`.
+3. Hidden resources are visible only to the owner and admins.
+
+### Token Lifecycle
+
+1. User registers and logs in to obtain the base authenticated session.
+2. Owner calls the token creation endpoint to generate an additional JWT token for a specific integration or service.
+3. Auth Service stores the token metadata in `auth_db`.
+4. Owner can list all issued tokens.
+5. Owner can delete or revoke a specific token.
+6. Admin can revoke tokens as part of user deactivation or deletion.
+
 ## PostgreSQL Schema
 
 The SQL below is a practical baseline schema for current APIs.
@@ -113,7 +133,9 @@ CREATE TABLE users (
 	id UUID PRIMARY KEY,
 	email TEXT NOT NULL UNIQUE,
 	password_hash TEXT NOT NULL,
+	role TEXT NOT NULL DEFAULT 'user',
 	is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+	is_active BOOLEAN NOT NULL DEFAULT TRUE,
 	is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -142,23 +164,26 @@ CREATE INDEX idx_user_otps_email ON user_otps(email);
 CREATE INDEX idx_user_otps_expires_at ON user_otps(expires_at);
 ```
 
-### 3) user_sessions
+### 3) user_tokens
 
-Tracks active JWT sessions and logout invalidation.
+Tracks multiple JWT tokens issued for a user so they can list and revoke tokens used by different services.
 
 ```sql
-CREATE TABLE user_sessions (
+CREATE TABLE user_tokens (
 	id UUID PRIMARY KEY,
 	user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	jti TEXT NOT NULL UNIQUE,
+	token_name TEXT,
+	token_hash TEXT NOT NULL,
 	issued_at TIMESTAMPTZ NOT NULL,
 	expires_at TIMESTAMPTZ NOT NULL,
 	revoked_at TIMESTAMPTZ,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
-CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
+CREATE INDEX idx_user_tokens_user_id ON user_tokens(user_id);
+CREATE INDEX idx_user_tokens_expires_at ON user_tokens(expires_at);
+CREATE INDEX idx_user_tokens_revoked_at ON user_tokens(revoked_at);
 ```
 
 ## Object DB (`object_db`) Tables
@@ -176,6 +201,10 @@ CREATE TABLE objects (
 	size_bytes BIGINT NOT NULL,
 	etag TEXT,
 	permission TEXT NOT NULL DEFAULT 'private-read',
+	visibility TEXT NOT NULL DEFAULT 'visible',
+	hidden_by UUID,
+	hidden_at TIMESTAMPTZ,
+	deleted_by UUID,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	deleted_at TIMESTAMPTZ,
@@ -226,6 +255,26 @@ CREATE INDEX idx_object_access_audit_owner_user_id ON object_access_audit(owner_
 CREATE INDEX idx_object_access_audit_created_at ON object_access_audit(created_at);
 ```
 
+### 4) object_visibility_events
+
+Tracks hide, unhide, and delete actions for resources to support audit and admin workflows.
+
+```sql
+CREATE TABLE object_visibility_events (
+	id UUID PRIMARY KEY,
+	object_id UUID NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+	actor_user_id UUID NOT NULL,
+	actor_role TEXT NOT NULL,
+	action TEXT NOT NULL,
+	reason TEXT,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_object_visibility_events_object_id ON object_visibility_events(object_id);
+CREATE INDEX idx_object_visibility_events_actor_user_id ON object_visibility_events(actor_user_id);
+CREATE INDEX idx_object_visibility_events_created_at ON object_visibility_events(created_at);
+```
+
 ## Configuration Notes
 
 Recommended environment variables:
@@ -242,4 +291,5 @@ REPLICATION_FACTOR=2
 - No cross-database transactions between `auth_db` and `object_db`.
 - No object byte storage in PostgreSQL (bytes stay in storage nodes).
 - No automatic placement rebalance when node topology changes.
+- No public access to hidden resources.
 

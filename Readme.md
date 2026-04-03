@@ -16,6 +16,9 @@ The goal is to understand the core engineering concepts behind systems like S3, 
 - **JWT authentication** — Secure access via token-based auth
 - **API Gateway** — Single public entry point with routing and auth validation
 - **Split persistence model** — Separate PostgreSQL databases for auth and object metadata
+- **Role-based access control** — Admins can deactivate/delete users and manage resources
+- **Resource visibility** — Owners and admins can hide/delete resources; hidden items stay visible only to the owner
+- **Multi-token support** — Users can create multiple JWT tokens for different service integrations
 - **Configurable storage nodes** — Node list and node count are driven by environment configuration
 - **Automated multi-node deployment** — A deployment script can deploy all services across configured nodes
 - **Fully containerized** — Runs end-to-end with Docker Compose
@@ -52,12 +55,22 @@ scripts/deploy-all-nodes.sh
 - api/v1/get-user
 - api/v1/update-user
 - api/v1/delete-user
+- api/v1/admin/deactivate-user
+- api/v1/admin/delete-user
+- api/v1/create-token
+- api/v1/list-tokens
+- api/v1/delete-token
 - api/v1/get-user-files
+
+Token creation is an authenticated flow: the user registers, logs in, then calls `api/v1/create-token` to create additional JWT tokens for other services or integrations.
 
 ### File Management endpoints
 - api/v1/upload-file
 - api/v1/download-file
 - api/v1/delete-file
+- api/v1/hide-file
+- api/v1/admin/hide-file
+- api/v1/admin/delete-file
 
 --------------------------------
 ## Architecture at a Glance
@@ -83,6 +96,8 @@ Client
         ▼         ▼         ▼
       Node 1    Node 2    Node 3
 ```
+
+Auth DB stores users, OTPs, and JWT token metadata. Object DB stores object metadata, placement, and visibility state.
 
 See [docs/architecture.md](docs/architecture.md) for a full breakdown.
 
@@ -111,6 +126,22 @@ curl -X PUT http://localhost:8080/auth/update-user \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"email": "parani@parani.com", "password": "secret"}'
+
+# Create a service token
+curl -X POST http://localhost:8080/auth/create-token \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"token_name": "analytics-service", "expires_in": "30d"}'
+
+# List issued tokens
+curl -X GET http://localhost:8080/auth/list-tokens \
+  -H "Authorization: Bearer $TOKEN"
+
+# Delete a token
+curl -X DELETE http://localhost:8080/auth/delete-token \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"token_id": "123456"}'
 
 # Delete the user
 curl -X DELETE http://localhost:8080/auth/delete-user \
@@ -149,6 +180,18 @@ curl http://localhost:8080/objects/my-file.txt \
  
 # Delete the file
 curl -X DELETE http://localhost:8080/objects/my-file.txt \
+  -H "Authorization: Bearer $TOKEN"
+
+# Hide a file for the owner and admins
+curl -X PUT http://localhost:8080/objects/my-file.txt/hide \
+  -H "Authorization: Bearer $TOKEN"
+
+# Admin hides a file
+curl -X PUT http://localhost:8080/admin/objects/my-file.txt/hide \
+  -H "Authorization: Bearer $TOKEN"
+
+# Admin deletes a file
+curl -X DELETE http://localhost:8080/admin/objects/my-file.txt \
   -H "Authorization: Bearer $TOKEN"
 ```
 

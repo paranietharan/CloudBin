@@ -13,6 +13,15 @@
 2. Placement logic must read node configuration from environment values.
 3. Use two PostgreSQL DSNs: one for auth service and one for object service.
 
+## Access Control Rules
+
+1. Admin can deactivate or delete users.
+2. Owner and admin can hide or delete resources.
+3. Hidden resources remain visible only to the owner and admins.
+4. Owners can create multiple JWT tokens for different service integrations.
+5. Owners can list and delete their own tokens; admins can revoke tokens when needed.
+6. Token creation must require an authenticated login session first.
+
 ## Database Ownership Rules
 
 1. Auth Service owns `auth_db` tables.

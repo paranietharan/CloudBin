@@ -27,8 +27,8 @@ Example script under `scripts/`:
 | Directory | Explanation |
 |---|---|
 | api-gateway | This is the one which exposed to the internet |
-| auth-service | Handles authentication |
-| object-api | Communicates with the storage nodes and computes placement from configured node list |
+| auth-service | Handles authentication, admin user control, and JWT token lifecycle |
+| object-api | Communicates with the storage nodes, computes placement from configured node list, and manages resource visibility |
 | storage-node | Provides file operations on each node (GET, DELETE, UPLOAD) |
 | scripts | Contains operational automation scripts such as multi-node deployment |
 | docker/postgres-auth | Docker assets for Auth Service PostgreSQL database |
@@ -36,4 +36,4 @@ Example script under `scripts/`:
 | internal | Shared libraries if needed |
 | docker | Docker-related assets |
 | docker-compose.yml | Local multi-service container orchestration |
-| docs/architecture.md | Full architecture details and PostgreSQL table definitions |
+| docs/architecture.md | Full architecture details, PostgreSQL table definitions, and access-control rules |

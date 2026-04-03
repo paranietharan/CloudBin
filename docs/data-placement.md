@@ -9,6 +9,8 @@ CloudBin uses two PostgreSQL databases:
 
 This document focuses on `object_db` usage.
 
+Resource visibility changes, such as hide or unhide, do not change placement. They only update metadata in `object_db`.
+
 ---
 
 ## The Problem
