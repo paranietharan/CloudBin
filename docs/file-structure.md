@@ -7,9 +7,17 @@ This document outlines the file structure and organization of the CloudBin proje
 ```
 Cloudbin/
 ├── api-gateway/
+|        /cmd/
+|        /internal/
 ├── auth-service/
+|        /cmd/
+|        /internal/
 ├── object-api/
+|        /cmd/
+|        /internal/
 ├── storage-node/
+|        /cmd/
+|        /internal/
 ├── scripts/
 ├── docker/postgres-auth/
 ├── docker/postgres-object/
