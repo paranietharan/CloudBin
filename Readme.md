@@ -217,7 +217,9 @@ curl -X DELETE http://localhost:8080/admin/objects/my-file.txt \
 | PostgreSQL Object DB | `5432` | — | ❌ No |
 
 # Other docs
-- [File Structure](docs/file-structure.md)
-- [Dev Rules](docs/dev-rules.md)
-- [Data Placement](docs/data-placement.md)
 - [Architecture](docs/architecture.md)
+- [Data Placement](docs/data-placement.md)
+- [Database Setup](docs/db-setup.md)
+- [Dev Rules](docs/dev-rules.md)
+- [Run the Application & Migrations](docs/run-and-migrate.md)
+- [File Structure](docs/file-structure.md)
