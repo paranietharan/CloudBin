@@ -15,7 +15,7 @@ The goal is to understand the core engineering concepts behind systems like S3, 
 - **Replication** — Objects written to multiple nodes for redundancy
 - **JWT authentication** — Secure access via token-based auth
 - **API Gateway** — Single public entry point with routing and auth validation
-- **Metadata store** — PostgreSQL tracks object location, size, type, and timestamps
+- **Split persistence model** — Separate PostgreSQL databases for auth and object metadata
 - **Configurable storage nodes** — Node list and node count are driven by environment configuration
 - **Automated multi-node deployment** — A deployment script can deploy all services across configured nodes
 - **Fully containerized** — Runs end-to-end with Docker Compose
@@ -31,6 +31,8 @@ CloudBin is designed so storage node topology is configurable instead of hardcod
 Example configuration values:
 
 ```env
+AUTH_DB_DSN=postgres://user:pass@auth-postgres:5432/auth_db?sslmode=disable
+OBJECT_DB_DSN=postgres://user:pass@object-postgres:5432/object_db?sslmode=disable
 STORAGE_NODES=node1:8083,node2:8084,node3:8085
 REPLICATION_FACTOR=2
 ```
@@ -73,14 +75,13 @@ Client
      │            │
      ▼            ▼
   Auth Svc    Object API
+    |            |
+    v            v
+   Auth DB      Object DB
                   │
         ┌─────────┼─────────┐
         ▼         ▼         ▼
       Node 1    Node 2    Node 3
-                  │
-                  ▼
-             PostgreSQL
-           (Metadata Store)
 ```
 
 See [docs/architecture.md](docs/architecture.md) for a full breakdown.
@@ -157,7 +158,7 @@ curl -X DELETE http://localhost:8080/objects/my-file.txt \
 |---|---|
 | Language | Go 1.26 |
 | Containerization | Docker, Docker Compose |
-| Metadata Storage | PostgreSQL |
+| Databases | PostgreSQL (Auth DB + Object DB) |
 | Auth | JWT (HS256) |
 | Communication | REST / HTTP |
 
@@ -171,4 +172,11 @@ curl -X DELETE http://localhost:8080/objects/my-file.txt \
 | Storage Node 1 | `8083` | — | ❌ No |
 | Storage Node 2 | `8084` | — | ❌ No |
 | Storage Node 3 | `8085` | — | ❌ No |
-| PostgreSQL | `5432` | — | ❌ No |
+| PostgreSQL Auth DB | `5432` | — | ❌ No |
+| PostgreSQL Object DB | `5432` | — | ❌ No |
+
+# Other docs
+- [File Structure](docs/file-structure.md)
+- [Dev Rules](docs/dev-rules.md)
+- [Data Placement](docs/data-placement.md)
+- [Architecture](docs/architecture.md)

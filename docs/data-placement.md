@@ -2,6 +2,13 @@
 
 This document explains how CloudBin decides which storage node(s) to use for each object, and how replication is handled.
 
+CloudBin uses two PostgreSQL databases:
+
+- `auth_db` for authentication and user lifecycle data
+- `object_db` for object metadata and placement data
+
+This document focuses on `object_db` usage.
+
 ---
 
 ## The Problem
@@ -92,7 +99,7 @@ Assume 3 nodes: `[node1, node2, node3]`
 1. Object API loads the configured node list and computes primary and replica node indices
 2. Sends the file to **both nodes in parallel**
 3. Both writes must succeed
-4. On success, metadata (including both node IDs) is committed to PostgreSQL
+4. On success, metadata (including both node IDs) is committed to `object_db`
 5. If either write fails, the upload is rejected and no metadata is written
 
 ```
@@ -101,7 +108,7 @@ Object API
   └──► PUT /objects/{key}  →  Replica Node  ✓
          │
          ▼
-  Write metadata to PostgreSQL
+  Write metadata to object_db
 ```
 
 ### On Download
@@ -120,7 +127,7 @@ Object API
 
 1. Object API looks up both node locations in metadata
 2. Sends delete requests to **both nodes**
-3. Removes the metadata row from PostgreSQL
+3. Removes the metadata row from `object_db`
 
 ```
 Object API
@@ -128,7 +135,7 @@ Object API
   └──► DELETE /objects/{key}  →  Replica Node
          │
          ▼
-  Delete metadata from PostgreSQL
+  Delete metadata from object_db
 ```
 
 ---
