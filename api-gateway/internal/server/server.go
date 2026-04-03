@@ -38,6 +38,7 @@ func New(cfg config.Config) *http.Server {
 		"/api/v1/login":                      true,
 		"/api/v1/forgot-password":            true,
 		"/api/v1/forgot-password/verify-otp": true,
+		"/api/v1/owner-only":                 true,
 		"/api/v1/logout":                     true,
 		"/api/v1/get-user":                   true,
 		"/api/v1/update-user":                true,

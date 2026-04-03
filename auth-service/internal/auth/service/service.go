@@ -189,34 +189,34 @@ func (s *Service) VerifyForgotPasswordOTP(ctx context.Context, tempToken, otpCod
 	return nil
 }
 
-func (s *Service) Login(ctx context.Context, email, password string) (string, error) {
+func (s *Service) Login(ctx context.Context, email, password string) (string, string, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	user, err := s.repo.GetAuthUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrInvalidCredentials
+			return "", "", ErrInvalidCredentials
 		}
-		return "", err
+		return "", "", err
 	}
 	if !user.IsVerified {
-		return "", ErrNotVerified
+		return "", "", ErrNotVerified
 	}
 	if !user.IsActive || user.IsDeleted {
-		return "", ErrInactiveOrDeleted
+		return "", "", ErrInactiveOrDeleted
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return "", ErrInvalidCredentials
+		return "", "", ErrInvalidCredentials
 	}
 
 	tokenID := uuid.NewString()
 	token, tokenHash, exp, err := s.issueToken(user.ID.String(), user.Role, tokenID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := s.repo.InsertUserToken(ctx, user.ID, tokenID, "login-session", tokenHash, exp); err != nil {
 		log.Printf("warning: token metadata not stored: %v", err)
 	}
-	return token, nil
+	return token, user.ID.String(), nil
 }
 
 func (s *Service) CreateToken(ctx context.Context, userID, role, tokenName string) (string, time.Time, error) {

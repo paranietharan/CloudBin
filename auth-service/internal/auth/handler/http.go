@@ -37,6 +37,7 @@ func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/login", h.handleLogin)
 	mux.HandleFunc("/api/v1/forgot-password", h.handleForgotPassword)
 	mux.HandleFunc("/api/v1/forgot-password/verify-otp", h.handleVerifyForgotPasswordOTP)
+	mux.HandleFunc("/api/v1/owner-only", h.authMiddleware(h.handleOwnerOnly))
 	mux.HandleFunc("/api/v1/create-token", h.authMiddleware(h.handleCreateToken))
 	mux.HandleFunc("/api/v1/list-tokens", h.authMiddleware(h.handleListTokens))
 	mux.HandleFunc("/api/v1/delete-token", h.authMiddleware(h.handleDeleteToken))
@@ -171,12 +172,33 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	token, err := h.svc.Login(ctx, req.Email, req.Password)
+	token, userID, err := h.svc.Login(ctx, req.Email, req.Password)
 	if err != nil {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"token": token})
+	respondJSON(w, http.StatusOK, map[string]any{"token": token, "user_id": userID})
+}
+
+func (h *HTTP) handleOwnerOnly(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id"))
+	if !isOwnerOrAdmin(p, ownerID) {
+		respondError(w, http.StatusForbidden, "only owner or admin can access this resource")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{"message": "hello"})
 }
 
 func (h *HTTP) handleCreateToken(w http.ResponseWriter, r *http.Request) {
@@ -285,6 +307,13 @@ func principalFromContext(ctx context.Context) (principal, bool) {
 	}
 	p, ok := v.(principal)
 	return p, ok
+}
+
+func isOwnerOrAdmin(p principal, ownerID string) bool {
+	if p.Role == "admin" || p.Role == "owner" {
+		return true
+	}
+	return ownerID != "" && p.UserID == ownerID
 }
 
 func (h *HTTP) mapError(w http.ResponseWriter, err error) {
