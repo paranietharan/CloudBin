@@ -52,6 +52,8 @@ Environment templates are now module-specific:
 
 - `api-gateway/.env.example`
 - `auth-service/.env.example`
+- `object-api/.env.example`
+- `storage-node/.env.example`
 - `migrations/.env.example`
 
 Copy each one to `.env` inside the same folder before running that module.
@@ -59,6 +61,8 @@ Copy each one to `.env` inside the same folder before running that module.
 ```bash
 cp api-gateway/.env.example api-gateway/.env
 cp auth-service/.env.example auth-service/.env
+cp object-api/.env.example object-api/.env
+cp storage-node/.env.example storage-node/.env
 cp migrations/.env.example migrations/.env
 ```
 

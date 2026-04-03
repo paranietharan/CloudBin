@@ -21,7 +21,7 @@ It performs:
 |---|---|---|
 | GATEWAY_PORT | Yes | HTTP port to run API Gateway |
 | AUTH_SERVICE_URL | Yes | Internal base URL of Auth Service |
-| OBJECT_API_URL | No (until object-api is implemented) | Internal base URL of Object API |
+| OBJECT_API_URL | Yes | Internal base URL of Object API |
 | JWT_SECRET | Yes | Shared JWT signing secret |
 | JWT_ISSUER | Yes | Expected JWT issuer |
 

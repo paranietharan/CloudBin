@@ -48,7 +48,6 @@ func New(cfg config.Config) *http.Server {
 		"/api/v1/create-token":               true,
 		"/api/v1/list-tokens":                true,
 		"/api/v1/delete-token":               true,
-		"/api/v1/get-user-files":             true,
 	}
 
 	publicRoutes := map[string]bool{
