@@ -48,7 +48,19 @@ func New(cfg config.Config) (*http.Server, error) {
 
 	repo := repository.NewPostgres(db)
 	otpStore := otp.NewStore(rdb, otpTTL)
-	authService := service.New(repo, otpStore, cfg.JWTSecret, cfg.JWTIssuer, jwtTTL)
+	authService := service.New(
+		repo,
+		otpStore,
+		cfg.JWTSecret,
+		cfg.JWTIssuer,
+		jwtTTL,
+		cfg.SMTPServer,
+		cfg.SMTPPort,
+		cfg.SMTPLogin,
+		cfg.SMTPPassword,
+		cfg.SMTPFromEmail,
+		cfg.SMTPFromName,
+	)
 	httpHandler := handler.NewHTTP(authService, cfg.JWTSecret, cfg.JWTIssuer)
 
 	mux := http.NewServeMux()

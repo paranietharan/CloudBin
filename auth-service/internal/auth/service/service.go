@@ -15,6 +15,7 @@ import (
 	"cloudbin-auth-service/internal/auth/model"
 	"cloudbin-auth-service/internal/auth/otp"
 	"cloudbin-auth-service/internal/auth/repository"
+	"cloudbin-auth-service/internal/email"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -52,18 +53,26 @@ type OTPStore interface {
 }
 
 type Service struct {
-	repo      UserRepository
-	otpStore  OTPStore
-	jwtSecret string
-	jwtIssuer string
-	jwtTTL    time.Duration
+	repo         UserRepository
+	otpStore     OTPStore
+	jwtSecret    string
+	jwtIssuer    string
+	jwtTTL       time.Duration
+	emailService *email.EmailService
 }
 
-func New(repo UserRepository, otpStore *otp.Store, jwtSecret, jwtIssuer string, jwtTTL time.Duration) *Service {
+func New(repo UserRepository, otpStore *otp.Store, jwtSecret, jwtIssuer string, jwtTTL time.Duration, smtpHost string, smtpPort int, smtpUser, smtpPass, smtpFromEmail, smtpFromName string) *Service {
 	if jwtTTL <= 0 {
 		jwtTTL = 24 * time.Hour
 	}
-	return &Service{repo: repo, otpStore: otpStore, jwtSecret: jwtSecret, jwtIssuer: jwtIssuer, jwtTTL: jwtTTL}
+	return &Service{
+		repo:         repo,
+		otpStore:     otpStore,
+		jwtSecret:    jwtSecret,
+		jwtIssuer:    jwtIssuer,
+		jwtTTL:       jwtTTL,
+		emailService: email.NewEmailService(smtpHost, smtpPort, smtpUser, smtpPass, smtpFromEmail, smtpFromName),
+	}
 }
 
 func (s *Service) BeginRegistration(ctx context.Context, email, password string) (string, error) {
@@ -95,7 +104,14 @@ func (s *Service) BeginRegistration(ctx context.Context, email, password string)
 		return "", err
 	}
 
-	log.Printf("register otp for %s: %s", email, otpCode)
+	if s.emailService != nil && s.emailService.IsConfigured() {
+		if err := s.emailService.SendAccountCreationOTPEmail(email, otpCode); err != nil {
+			return "", err
+		}
+	} else {
+		log.Printf("register otp for %s: %s", email, otpCode)
+	}
+
 	return tempToken, nil
 }
 
@@ -122,6 +138,13 @@ func (s *Service) VerifyRegistrationOTP(ctx context.Context, tempToken, otpCode 
 		return uuid.Nil, err
 	}
 	_ = s.otpStore.Delete(ctx, tempToken)
+
+	if s.emailService != nil && s.emailService.IsConfigured() {
+		if err := s.emailService.SendAccountCreatedEmail(payload.Email); err != nil {
+			log.Printf("warning: failed to send account created email to %s: %v", payload.Email, err)
+		}
+	}
+
 	return id, nil
 }
 
@@ -149,7 +172,14 @@ func (s *Service) BeginForgotPassword(ctx context.Context, email string) (string
 		return "", err
 	}
 
-	log.Printf("forgot-password otp for %s: %s", email, otpCode)
+	if s.emailService != nil && s.emailService.IsConfigured() {
+		if err := s.emailService.SendForgotPasswordEmail(email, otpCode); err != nil {
+			return "", err
+		}
+	} else {
+		log.Printf("forgot-password otp for %s: %s", email, otpCode)
+	}
+
 	return tempToken, nil
 }
 
