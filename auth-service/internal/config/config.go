@@ -11,6 +11,7 @@ type Config struct {
 	RedisAddr     string
 	RedisPassword string
 	RedisDB       int
+	DEVMode       bool
 	OTPTTL        string
 	JWTSecret     string
 	JWTIssuer     string
@@ -31,6 +32,7 @@ func Load() Config {
 		RedisAddr:     getenv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: getenv("REDIS_PASSWORD", ""),
 		RedisDB:       getenvInt("REDIS_DB", 0),
+		DEVMode:       getenvBool("DEV_MODE", false),
 		OTPTTL:        getenv("OTP_TTL", "5m"),
 		JWTSecret:     getenv("JWT_SECRET", "change-me"),
 		JWTIssuer:     getenv("JWT_ISSUER", "cloudbin-auth"),
@@ -58,6 +60,18 @@ func getenvInt(key string, fallback int) int {
 		return fallback
 	}
 	parsed, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getenvBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(v)
 	if err != nil {
 		return fallback
 	}

@@ -54,6 +54,7 @@ func New(cfg config.Config) (*http.Server, error) {
 		cfg.JWTSecret,
 		cfg.JWTIssuer,
 		jwtTTL,
+		cfg.DEVMode,
 		cfg.SMTPServer,
 		cfg.SMTPPort,
 		cfg.SMTPLogin,

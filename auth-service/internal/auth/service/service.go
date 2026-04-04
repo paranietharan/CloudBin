@@ -58,10 +58,11 @@ type Service struct {
 	jwtSecret    string
 	jwtIssuer    string
 	jwtTTL       time.Duration
+	devMode      bool
 	emailService *email.EmailService
 }
 
-func New(repo UserRepository, otpStore *otp.Store, jwtSecret, jwtIssuer string, jwtTTL time.Duration, smtpHost string, smtpPort int, smtpUser, smtpPass, smtpFromEmail, smtpFromName string) *Service {
+func New(repo UserRepository, otpStore *otp.Store, jwtSecret, jwtIssuer string, jwtTTL time.Duration, devMode bool, smtpHost string, smtpPort int, smtpUser, smtpPass, smtpFromEmail, smtpFromName string) *Service {
 	if jwtTTL <= 0 {
 		jwtTTL = 24 * time.Hour
 	}
@@ -71,6 +72,7 @@ func New(repo UserRepository, otpStore *otp.Store, jwtSecret, jwtIssuer string, 
 		jwtSecret:    jwtSecret,
 		jwtIssuer:    jwtIssuer,
 		jwtTTL:       jwtTTL,
+		devMode:      devMode,
 		emailService: email.NewEmailService(smtpHost, smtpPort, smtpUser, smtpPass, smtpFromEmail, smtpFromName),
 	}
 }
@@ -104,12 +106,19 @@ func (s *Service) BeginRegistration(ctx context.Context, email, password string)
 		return "", err
 	}
 
+	emailSent := false
 	if s.emailService != nil && s.emailService.IsConfigured() {
 		if err := s.emailService.SendAccountCreationOTPEmail(email, otpCode); err != nil {
-			return "", err
+			log.Printf("warning: failed to send registration OTP email to %s: %v", email, err)
+		} else {
+			emailSent = true
 		}
+	}
+
+	if s.devMode || !emailSent {
+		log.Printf("register otp for %s: %s (email_sent=%t)", email, otpCode, emailSent)
 	} else {
-		log.Printf("register otp for %s: %s", email, otpCode)
+		log.Printf("register otp sent for %s", email)
 	}
 
 	return tempToken, nil
@@ -172,12 +181,19 @@ func (s *Service) BeginForgotPassword(ctx context.Context, email string) (string
 		return "", err
 	}
 
+	emailSent := false
 	if s.emailService != nil && s.emailService.IsConfigured() {
 		if err := s.emailService.SendForgotPasswordEmail(email, otpCode); err != nil {
-			return "", err
+			log.Printf("warning: failed to send forgot-password OTP email to %s: %v", email, err)
+		} else {
+			emailSent = true
 		}
+	}
+
+	if s.devMode || !emailSent {
+		log.Printf("forgot-password otp for %s: %s (email_sent=%t)", email, otpCode, emailSent)
 	} else {
-		log.Printf("forgot-password otp for %s: %s", email, otpCode)
+		log.Printf("forgot-password otp sent for %s", email)
 	}
 
 	return tempToken, nil
