@@ -9,10 +9,10 @@ type ObjectRecord struct {
 	ContentType string
 	SizeBytes   int64
 	ETag        string
+	Permission  string
 	Visibility  string
 	PrimaryNode string
 	ReplicaNode string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
-

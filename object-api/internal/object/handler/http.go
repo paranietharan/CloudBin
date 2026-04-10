@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"cloudbin-object-api/internal/object/service"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 type HTTP struct {
@@ -48,6 +50,9 @@ func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/admin/hide-file", h.authMiddleware(h.handleAdminHideAlias))
 	mux.HandleFunc("/api/v1/admin/delete-file", h.authMiddleware(h.handleAdminDeleteAlias))
 	mux.HandleFunc("/api/v1/get-user-files", h.authMiddleware(h.handleGetUserFiles))
+	mux.HandleFunc("/api/v1/make-private-read", h.authMiddleware(h.handleMakePrivateRead))
+	mux.HandleFunc("/api/v1/make-public-read", h.authMiddleware(h.handleMakePublicRead))
+	mux.HandleFunc("/api/v1/public/download-file", h.handlePublicDownload)
 }
 
 func (h *HTTP) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -75,7 +80,7 @@ func (h *HTTP) handleObjects(w http.ResponseWriter, r *http.Request) {
 		key = strings.TrimSuffix(key, "/hide")
 		hideCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		if err := h.svc.Hide(hideCtx, p.UserID, key, p.UserID, p.Role, "owner hide") ; err != nil {
+		if err := h.svc.Hide(hideCtx, p.UserID, key, p.UserID, p.Role, "owner hide"); err != nil {
 			h.mapError(w, err)
 			return
 		}
@@ -126,7 +131,7 @@ func (h *HTTP) handleAdminObjects(w http.ResponseWriter, r *http.Request) {
 		key = strings.TrimSuffix(key, "/hide")
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		if err := h.svc.Hide(ctx, ownerID, key, p.UserID, p.Role, "admin hide") ; err != nil {
+		if err := h.svc.Hide(ctx, ownerID, key, p.UserID, p.Role, "admin hide"); err != nil {
 			h.mapError(w, err)
 			return
 		}
@@ -282,10 +287,93 @@ func (h *HTTP) handleGetUserFiles(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{"files": files})
 }
 
+func (h *HTTP) handleMakePrivateRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	key := readObjectKey(r)
+	log.Printf("make-private-read requested: owner_id=%s object_key=%s role=%s", p.UserID, key, p.Role)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := h.svc.MakePrivateRead(ctx, p.UserID, key); err != nil {
+		log.Printf("make-private-read failed: owner_id=%s object_key=%s err=%v", p.UserID, key, err)
+		h.mapError(w, err)
+		return
+	}
+	log.Printf("make-private-read success: owner_id=%s object_key=%s", p.UserID, key)
+	respondJSON(w, http.StatusOK, map[string]string{"message": "permission set to private-read"})
+}
+
+func (h *HTTP) handleMakePublicRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	key := readObjectKey(r)
+	log.Printf("make-public-read requested: owner_id=%s object_key=%s role=%s", p.UserID, key, p.Role)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := h.svc.MakePublicRead(ctx, p.UserID, key); err != nil {
+		log.Printf("make-public-read failed: owner_id=%s object_key=%s err=%v", p.UserID, key, err)
+		h.mapError(w, err)
+		return
+	}
+	log.Printf("make-public-read success: owner_id=%s object_key=%s", p.UserID, key)
+	respondJSON(w, http.StatusOK, map[string]string{"message": "permission set to public-read"})
+}
+
+func (h *HTTP) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id"))
+	key := readObjectKey(r)
+	if ownerID == "" {
+		ownerID = readOwnerID(r)
+	}
+	if ownerID == "" || key == "" {
+		respondError(w, http.StatusBadRequest, "owner_id and object_key are required")
+		return
+	}
+	log.Printf("public download requested: owner_id=%s object_key=%s", ownerID, key)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	rec, data, err := h.svc.DownloadPublic(ctx, ownerID, key)
+	if err != nil {
+		log.Printf("public download failed: owner_id=%s object_key=%s err=%v", ownerID, key, err)
+		h.mapError(w, err)
+		return
+	}
+	log.Printf("public download success: owner_id=%s object_key=%s permission=%s", ownerID, key, rec.Permission)
+
+	if rec.ContentType != "" {
+		w.Header().Set("Content-Type", rec.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if rec.ETag != "" {
+		w.Header().Set("ETag", rec.ETag)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (h *HTTP) uploadObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
 	if strings.TrimSpace(key) == "" {
-		respondError(w, http.StatusBadRequest, "object key is required")
-		return
+		key = uuid.NewString()
 	}
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -298,7 +386,7 @@ func (h *HTTP) uploadObject(w http.ResponseWriter, r *http.Request, ownerID, key
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusCreated, map[string]string{"message": "object stored"})
+	respondJSON(w, http.StatusCreated, map[string]string{"message": "object stored", "object_key": key})
 }
 
 func (h *HTTP) downloadObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
@@ -450,4 +538,3 @@ func respondJSON(w http.ResponseWriter, status int, payload any) {
 func respondError(w http.ResponseWriter, status int, message string) {
 	respondJSON(w, status, map[string]string{"error": message})
 }
-

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ var (
 type Repository interface {
 	UpsertObject(ctx context.Context, ownerID, objectKey, contentType string, sizeBytes int64, etag, primaryNode, replicaNode string) (string, error)
 	FindByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, error)
+	SetPermissionByOwnerAndKey(ctx context.Context, ownerID, objectKey, permission string) (bool, error)
 	HideByOwnerAndKey(ctx context.Context, ownerID, objectKey, actorID, actorRole, reason string) (bool, error)
 	DeleteByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (bool, error)
 	ListByOwner(ctx context.Context, ownerID string) ([]model.ObjectRecord, error)
@@ -162,6 +164,66 @@ func (s *Service) ListOwnerObjects(ctx context.Context, ownerID string) ([]model
 	return s.repo.ListByOwner(ctx, ownerID)
 }
 
+func (s *Service) MakePrivateRead(ctx context.Context, ownerID, objectKey string) error {
+	return s.setPermission(ctx, ownerID, objectKey, "private-read")
+}
+
+func (s *Service) MakePublicRead(ctx context.Context, ownerID, objectKey string) error {
+	return s.setPermission(ctx, ownerID, objectKey, "public-read")
+}
+
+func (s *Service) setPermission(ctx context.Context, ownerID, objectKey, permission string) error {
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return ErrInvalidKey
+	}
+	permission = strings.TrimSpace(permission)
+	if permission == "" {
+		return ErrInvalidKey
+	}
+
+	log.Printf("set-permission requested: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, permission)
+
+	ok, err := s.repo.SetPermissionByOwnerAndKey(ctx, ownerID, objectKey, permission)
+	if err != nil {
+		log.Printf("set-permission repo error: owner_id=%s object_key=%s permission=%s err=%v", ownerID, objectKey, permission, err)
+		return err
+	}
+	if !ok {
+		log.Printf("set-permission not found: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, permission)
+		return ErrNotFound
+	}
+	log.Printf("set-permission success: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, permission)
+	return nil
+}
+
+func (s *Service) DownloadPublic(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, []byte, error) {
+	rec, err := s.repo.FindByOwnerAndKey(ctx, ownerID, objectKey)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			log.Printf("public download not found: owner_id=%s object_key=%s", ownerID, objectKey)
+			return model.ObjectRecord{}, nil, ErrNotFound
+		}
+		log.Printf("public download repo error: owner_id=%s object_key=%s err=%v", ownerID, objectKey, err)
+		return model.ObjectRecord{}, nil, err
+	}
+	if rec.Permission != "public-read" || rec.Visibility != "visible" {
+		log.Printf("public download forbidden: owner_id=%s object_key=%s permission=%s visibility=%s", ownerID, objectKey, rec.Permission, rec.Visibility)
+		return model.ObjectRecord{}, nil, ErrForbidden
+	}
+	log.Printf("public download allowed: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, rec.Permission)
+
+	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
+	body, err := s.getFromNode(ctx, rec.PrimaryNode, storageKey)
+	if err != nil {
+		body, err = s.getFromNode(ctx, rec.ReplicaNode, storageKey)
+		if err != nil {
+			return model.ObjectRecord{}, nil, err
+		}
+	}
+	return rec, body, nil
+}
+
 func (s *Service) placement(objectKey string) (string, string) {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(objectKey))
@@ -225,4 +287,3 @@ func storagePath(ownerID, objectKey string) string {
 	key := strings.TrimPrefix(strings.TrimSpace(objectKey), "/")
 	return owner + "/" + key
 }
-

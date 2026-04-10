@@ -61,7 +61,7 @@ func (p *Postgres) FindByOwnerAndKey(ctx context.Context, ownerID, objectKey str
 	var rec model.ObjectRecord
 	err := p.db.QueryRow(ctx, `
 		SELECT o.id, o.owner_user_id, o.object_key, COALESCE(o.content_type, ''), o.size_bytes, COALESCE(o.etag, ''),
-		       o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at
+		       o.permission, o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at
 		FROM objects o
 		JOIN object_placements op ON op.object_id = o.id
 		WHERE o.owner_user_id = $1 AND o.object_key = $2 AND o.deleted_at IS NULL
@@ -72,6 +72,7 @@ func (p *Postgres) FindByOwnerAndKey(ctx context.Context, ownerID, objectKey str
 		&rec.ContentType,
 		&rec.SizeBytes,
 		&rec.ETag,
+		&rec.Permission,
 		&rec.Visibility,
 		&rec.PrimaryNode,
 		&rec.ReplicaNode,
@@ -123,7 +124,7 @@ func (p *Postgres) DeleteByOwnerAndKey(ctx context.Context, ownerID, objectKey s
 func (p *Postgres) ListByOwner(ctx context.Context, ownerID string) ([]model.ObjectRecord, error) {
 	rows, err := p.db.Query(ctx, `
 		SELECT o.id, o.owner_user_id, o.object_key, COALESCE(o.content_type, ''), o.size_bytes, COALESCE(o.etag, ''),
-		       o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at
+		       o.permission, o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at
 		FROM objects o
 		JOIN object_placements op ON op.object_id = o.id
 		WHERE o.owner_user_id = $1 AND o.deleted_at IS NULL
@@ -144,6 +145,7 @@ func (p *Postgres) ListByOwner(ctx context.Context, ownerID string) ([]model.Obj
 			&rec.ContentType,
 			&rec.SizeBytes,
 			&rec.ETag,
+			&rec.Permission,
 			&rec.Visibility,
 			&rec.PrimaryNode,
 			&rec.ReplicaNode,
@@ -165,6 +167,18 @@ func (p *Postgres) MarkAccessAudit(ctx context.Context, objectID, ownerID, actio
 	return err
 }
 
+func (p *Postgres) SetPermissionByOwnerAndKey(ctx context.Context, ownerID, objectKey, permission string) (bool, error) {
+	tag, err := p.db.Exec(ctx, `
+		UPDATE objects
+		SET permission = $3, updated_at = NOW()
+		WHERE owner_user_id = $1 AND object_key = $2 AND deleted_at IS NULL
+	`, ownerID, objectKey, permission)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func nullableUUID(v string) any {
 	if v == "" {
 		return nil
@@ -179,4 +193,3 @@ func nullableUUID(v string) any {
 func (p *Postgres) NowUTC() time.Time {
 	return time.Now().UTC()
 }
-
