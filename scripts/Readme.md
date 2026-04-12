@@ -1,6 +1,49 @@
 
 ## Docker Deployment (3 Nodes)
 
+## Local Backend Scripts
+
+- `scripts/run-services.sh` starts `auth-service`, `object-api`, and `api-gateway` in the background.
+- `scripts/stop-services.sh` stops those services using PID files.
+- `scripts/health-check.sh` checks health endpoints for gateway, services, and storage nodes.
+
+### Start Services
+
+```bash
+./scripts/run-services.sh
+```
+
+Logs are written to `.logs/` and pids are stored in `.pids/`.
+
+### Health Check
+
+```bash
+./scripts/health-check.sh
+```
+
+### Stop Services
+
+```bash
+./scripts/stop-services.sh
+```
+
+### Integration Main Flow
+
+Runs a practical end-to-end flow using an existing verified user:
+
+```bash
+EMAIL="<email>" PASSWORD="<password>" FILE_PATH="/absolute/path/to/file.bin" ./scripts/integration-main-flow.sh
+```
+
+This script checks:
+
+- login
+- upload
+- list files
+- make public
+- public download
+- make private
+
 CloudBin includes an automated deployment script for storage nodes:
 
 - `scripts/deploy-storage-nodes.sh`

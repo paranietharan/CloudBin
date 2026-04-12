@@ -2,10 +2,15 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"cloudbin-object-api/internal/config"
 	"cloudbin-object-api/internal/server"
@@ -26,8 +31,25 @@ func main() {
 	}
 
 	log.Printf("object api listening on :%s", cfg.Port)
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("object api stopped: %v", err)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("object api stopped: %v", err)
+		}
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("object api shutdown error: %v", err)
+		}
 	}
 }
 
@@ -76,4 +98,3 @@ func loadDotEnv(path string) {
 		log.Printf("warning: failed to scan %s: %v", path, err)
 	}
 }
-

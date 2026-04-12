@@ -159,6 +159,66 @@ func (p *Postgres) ListByOwner(ctx context.Context, ownerID string) ([]model.Obj
 	return out, rows.Err()
 }
 
+func (p *Postgres) ListByOwnerWithFilters(ctx context.Context, ownerID, permission, visibility, keyQuery string, limit, offset int) ([]model.ObjectRecord, error) {
+	rows, err := p.db.Query(ctx, `
+		SELECT o.id, o.owner_user_id, o.object_key, COALESCE(o.content_type, ''), o.size_bytes, COALESCE(o.etag, ''),
+		       o.permission, o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at
+		FROM objects o
+		JOIN object_placements op ON op.object_id = o.id
+		WHERE o.owner_user_id = $1
+		  AND o.deleted_at IS NULL
+		  AND ($2 = '' OR o.permission = $2)
+		  AND ($3 = '' OR o.visibility = $3)
+		  AND ($4 = '' OR o.object_key ILIKE '%' || $4 || '%')
+		ORDER BY o.updated_at DESC
+		LIMIT $5 OFFSET $6
+	`, ownerID, permission, visibility, keyQuery, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.ObjectRecord, 0)
+	for rows.Next() {
+		var rec model.ObjectRecord
+		if err := rows.Scan(
+			&rec.ID,
+			&rec.OwnerUserID,
+			&rec.ObjectKey,
+			&rec.ContentType,
+			&rec.SizeBytes,
+			&rec.ETag,
+			&rec.Permission,
+			&rec.Visibility,
+			&rec.PrimaryNode,
+			&rec.ReplicaNode,
+			&rec.CreatedAt,
+			&rec.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+func (p *Postgres) CountByOwnerWithFilters(ctx context.Context, ownerID, permission, visibility, keyQuery string) (int, error) {
+	var total int
+	err := p.db.QueryRow(ctx, `
+		SELECT COUNT(1)
+		FROM objects o
+		WHERE o.owner_user_id = $1
+		  AND o.deleted_at IS NULL
+		  AND ($2 = '' OR o.permission = $2)
+		  AND ($3 = '' OR o.visibility = $3)
+		  AND ($4 = '' OR o.object_key ILIKE '%' || $4 || '%')
+	`, ownerID, permission, visibility, keyQuery).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (p *Postgres) MarkAccessAudit(ctx context.Context, objectID, ownerID, action, status, sourceIP, userAgent string) error {
 	_, err := p.db.Exec(ctx, `
 		INSERT INTO object_access_audit (id, object_id, owner_user_id, action, status, source_ip, user_agent, created_at)

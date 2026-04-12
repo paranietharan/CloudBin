@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -32,8 +34,11 @@ var objectExactPaths = map[string]struct{}{
 	"/api/v1/admin/hide-file":      {},
 	"/api/v1/admin/delete-file":    {},
 	"/api/v1/get-user-files":       {},
+	"/api/v1/file-exists":          {},
 	"/api/v1/make-private-read":    {},
 	"/api/v1/make-public-read":     {},
+	"/api/v1/share-link":           {},
+	"/api/v1/share/download":       {},
 	"/api/v1/public/download-file": {},
 }
 
@@ -68,6 +73,7 @@ func New(cfg config.Config) *http.Server {
 		"/api/v1/login":                      {},
 		"/api/v1/forgot-password":            {},
 		"/api/v1/forgot-password/verify-otp": {},
+		"/api/v1/share/download":             {},
 		"/api/v1/public/download-file":       {},
 		"/healthz":                           {},
 	}
@@ -80,7 +86,7 @@ func New(cfg config.Config) *http.Server {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := publicRoutes[r.URL.Path]; !ok {
 			if err := validateBearerJWT(r.Header.Get("Authorization"), cfg.JWTSecret, cfg.JWTIssuer); err != nil {
-				respondJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				respondError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 		}
@@ -95,13 +101,13 @@ func New(cfg config.Config) *http.Server {
 			return
 		}
 
-		respondJSON(w, http.StatusNotFound, map[string]string{"error": "route not found"})
+		respondError(w, http.StatusNotFound, "route not found")
 	})
 
 	s := &Server{}
 	s.http = &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      mux,
+		Handler:      requestLoggingMiddleware(mux),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -146,7 +152,70 @@ func validateBearerJWT(authHeader, secret, issuer string) error {
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload any) {
+	success := status >= http.StatusOK && status < http.StatusMultipleChoices
+	wrapped := payload
+	switch v := payload.(type) {
+	case map[string]any:
+		if _, ok := v["success"]; !ok {
+			v["success"] = success
+		}
+		wrapped = v
+	case map[string]string:
+		m := make(map[string]any, len(v)+1)
+		for k, val := range v {
+			m[k] = val
+		}
+		m["success"] = success
+		wrapped = m
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	_ = json.NewEncoder(w).Encode(wrapped)
+}
+
+func respondError(w http.ResponseWriter, status int, message string) {
+	respondJSON(w, status, map[string]string{"error": message, "error_code": errorCodeFromStatus(status)})
+}
+
+func errorCodeFromStatus(status int) string {
+	code := strings.ToLower(http.StatusText(status))
+	code = strings.ReplaceAll(code, " ", "_")
+	if code == "" {
+		return "internal_server_error"
+	}
+	return code
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func requestLoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+		w.Header().Set("X-Request-ID", requestID)
+
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		log.Printf("request_id=%s method=%s path=%s status=%d duration_ms=%d", requestID, r.Method, r.URL.Path, rec.status, time.Since(start).Milliseconds())
+	})
+}
+
+func generateRequestID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "req-fallback"
+	}
+	return "req-" + hex.EncodeToString(buf)
 }

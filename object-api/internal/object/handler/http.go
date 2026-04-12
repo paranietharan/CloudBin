@@ -6,8 +6,11 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"cloudbin-object-api/internal/object/service"
@@ -20,6 +23,7 @@ type HTTP struct {
 	svc       *service.Service
 	jwtSecret string
 	jwtIssuer string
+	limiter   *fixedWindowLimiter
 }
 
 type principal struct {
@@ -34,8 +38,62 @@ type keyRequest struct {
 	OwnerID   string `json:"owner_id"`
 }
 
+type shareLinkRequest struct {
+	ObjectKey       string `json:"object_key"`
+	ExpiresInSecond int    `json:"expires_in_seconds"`
+}
+
+const maxUploadBytes = 20 << 20 // 20 MiB
+
+type windowCounter struct {
+	windowStart time.Time
+	count       int
+}
+
+type fixedWindowLimiter struct {
+	mu      sync.Mutex
+	entries map[string]windowCounter
+}
+
 func NewHTTP(svc *service.Service, jwtSecret, jwtIssuer string) *HTTP {
-	return &HTTP{svc: svc, jwtSecret: jwtSecret, jwtIssuer: jwtIssuer}
+	return &HTTP{
+		svc:       svc,
+		jwtSecret: jwtSecret,
+		jwtIssuer: jwtIssuer,
+		limiter:   &fixedWindowLimiter{entries: make(map[string]windowCounter)},
+	}
+}
+
+func (l *fixedWindowLimiter) Allow(key string, limit int, window time.Duration) bool {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entry, ok := l.entries[key]
+	if !ok || now.Sub(entry.windowStart) >= window {
+		l.entries[key] = windowCounter{windowStart: now, count: 1}
+		return true
+	}
+
+	if entry.count >= limit {
+		return false
+	}
+
+	entry.count++
+	l.entries[key] = entry
+	return true
+}
+
+func (h *HTTP) allowByUserAndIP(r *http.Request, userID, action string, limit int, window time.Duration) bool {
+	ip := "unknown"
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		ip = host
+	}
+	if ip == "" {
+		ip = "unknown"
+	}
+	return h.limiter.Allow(userID+":"+action, limit, window) && h.limiter.Allow(ip+":"+action, limit, window)
 }
 
 func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
@@ -50,8 +108,11 @@ func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/admin/hide-file", h.authMiddleware(h.handleAdminHideAlias))
 	mux.HandleFunc("/api/v1/admin/delete-file", h.authMiddleware(h.handleAdminDeleteAlias))
 	mux.HandleFunc("/api/v1/get-user-files", h.authMiddleware(h.handleGetUserFiles))
+	mux.HandleFunc("/api/v1/file-exists", h.authMiddleware(h.handleFileExists))
 	mux.HandleFunc("/api/v1/make-private-read", h.authMiddleware(h.handleMakePrivateRead))
 	mux.HandleFunc("/api/v1/make-public-read", h.authMiddleware(h.handleMakePublicRead))
+	mux.HandleFunc("/api/v1/share-link", h.authMiddleware(h.handleCreateShareLink))
+	mux.HandleFunc("/api/v1/share/download", h.handleDownloadByShareLink)
 	mux.HandleFunc("/api/v1/public/download-file", h.handlePublicDownload)
 }
 
@@ -156,6 +217,10 @@ func (h *HTTP) handleUploadAlias(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	if !h.allowByUserAndIP(r, p.UserID, "upload", 30, time.Minute) {
+		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for upload")
+		return
+	}
 	key := readObjectKey(r)
 	h.uploadObject(w, r, p.UserID, key)
 }
@@ -182,6 +247,10 @@ func (h *HTTP) handleDeleteAlias(w http.ResponseWriter, r *http.Request) {
 	p, ok := principalFromContext(r.Context())
 	if !ok {
 		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !h.allowByUserAndIP(r, p.UserID, "delete", 40, time.Minute) {
+		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for delete")
 		return
 	}
 	key := readObjectKey(r)
@@ -279,12 +348,74 @@ func (h *HTTP) handleGetUserFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	files, err := h.svc.ListOwnerObjects(ctx, p.UserID)
+
+	limit := parseIntOrDefault(r.URL.Query().Get("limit"), 20)
+	offset := parseIntOrDefault(r.URL.Query().Get("offset"), 0)
+	permission := strings.TrimSpace(r.URL.Query().Get("permission"))
+	visibility := strings.TrimSpace(r.URL.Query().Get("visibility"))
+	keyQuery := strings.TrimSpace(r.URL.Query().Get("key"))
+
+	files, total, err := h.svc.ListOwnerObjectsPage(ctx, p.UserID, permission, visibility, keyQuery, limit, offset)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"files": files})
+	respondJSON(w, http.StatusOK, map[string]any{
+		"files":  files,
+		"total":  total,
+		"limit":  normalizeLimit(limit),
+		"offset": normalizeOffset(offset),
+	})
+}
+
+func parseIntOrDefault(raw string, fallback int) int {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func normalizeLimit(limit int) int {
+	if limit <= 0 {
+		return 20
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
+func normalizeOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
+}
+
+func (h *HTTP) handleFileExists(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	key := readObjectKey(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	exists, err := h.svc.FileExists(ctx, p.UserID, key)
+	if err != nil {
+		h.mapError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"object_key": key, "exists": exists})
 }
 
 func (h *HTTP) handleMakePrivateRead(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +426,10 @@ func (h *HTTP) handleMakePrivateRead(w http.ResponseWriter, r *http.Request) {
 	p, ok := principalFromContext(r.Context())
 	if !ok {
 		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !h.allowByUserAndIP(r, p.UserID, "permission", 60, time.Minute) {
+		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for permission updates")
 		return
 	}
 	key := readObjectKey(r)
@@ -318,6 +453,10 @@ func (h *HTTP) handleMakePublicRead(w http.ResponseWriter, r *http.Request) {
 	p, ok := principalFromContext(r.Context())
 	if !ok {
 		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !h.allowByUserAndIP(r, p.UserID, "permission", 60, time.Minute) {
+		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for permission updates")
 		return
 	}
 	key := readObjectKey(r)
@@ -371,12 +510,86 @@ func (h *HTTP) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+func (h *HTTP) handleCreateShareLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req shareLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	ttl := 15 * time.Minute
+	if req.ExpiresInSecond > 0 {
+		ttl = time.Duration(req.ExpiresInSecond) * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	token, expiresAt, err := h.svc.CreateTemporaryShareLink(ctx, p.UserID, req.ObjectKey, ttl)
+	if err != nil {
+		h.mapError(w, err)
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"token":      token,
+		"expires_at": expiresAt,
+		"url":        "/api/v1/share/download?token=" + token,
+	})
+}
+
+func (h *HTTP) handleDownloadByShareLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		respondError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	rec, data, err := h.svc.DownloadByShareToken(ctx, token)
+	if err != nil {
+		h.mapError(w, err)
+		return
+	}
+
+	if rec.ContentType != "" {
+		w.Header().Set("Content-Type", rec.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if rec.ETag != "" {
+		w.Header().Set("ETag", rec.ETag)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (h *HTTP) uploadObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
 	if strings.TrimSpace(key) == "" {
 		key = uuid.NewString()
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			respondError(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size of 20 MiB")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
@@ -530,11 +743,37 @@ func (h *HTTP) mapError(w http.ResponseWriter, err error) {
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload any) {
+	success := status >= http.StatusOK && status < http.StatusMultipleChoices
+	wrapped := payload
+	switch v := payload.(type) {
+	case map[string]any:
+		if _, ok := v["success"]; !ok {
+			v["success"] = success
+		}
+		wrapped = v
+	case map[string]string:
+		m := make(map[string]any, len(v)+1)
+		for k, val := range v {
+			m[k] = val
+		}
+		m["success"] = success
+		wrapped = m
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	_ = json.NewEncoder(w).Encode(wrapped)
 }
 
 func respondError(w http.ResponseWriter, status int, message string) {
-	respondJSON(w, status, map[string]string{"error": message})
+	respondJSON(w, status, map[string]string{"error": message, "error_code": errorCodeFromStatus(status)})
+}
+
+func errorCodeFromStatus(status int) string {
+	code := strings.ToLower(http.StatusText(status))
+	code = strings.ReplaceAll(code, " ", "_")
+	if code == "" {
+		return "internal_server_error"
+	}
+	return code
 }
