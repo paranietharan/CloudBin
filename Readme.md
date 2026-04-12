@@ -23,6 +23,32 @@ The goal is to understand the core engineering concepts behind systems like S3, 
 - **Automated multi-node deployment** — A deployment script can deploy all services across configured nodes
 - **Fully containerized** — Runs end-to-end with Docker Compose
 
+## CI Command
+
+Use this command in CI/local checks:
+
+```bash
+go test ./...
+```
+
+## What I Improved
+
+- Added service orchestration scripts for local backend startup, health checks, and shutdown.
+- Added upload key auto-generation and consistent object key response payloads.
+- Added object permission toggles (`private-read` and `public-read`) and public download behavior.
+- Added temporary share link endpoint with expiry.
+- Added pagination and filtering for user file listing.
+- Added fixed-window in-memory rate limiting for sensitive object endpoints.
+- Added request-id based structured logging in API gateway.
+- Added graceful shutdown support for gateway, auth-service, and object-api.
+
+## Known Limitations / Next Steps
+
+- Temporary share links are currently in-memory only (reset on service restart).
+- Rate limiting is in-memory and not distributed across multiple instances.
+- Integration script assumes services are already running and requires `jq`.
+- Dedicated e2e test environment with seeded data is still pending.
+
 
 # Other docs
 - [How to Run](docs/how-to-run.md)

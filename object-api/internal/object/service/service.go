@@ -17,6 +17,8 @@ import (
 
 	"cloudbin-object-api/internal/object/model"
 	"cloudbin-object-api/internal/object/repository"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -34,6 +36,8 @@ type Repository interface {
 	HideByOwnerAndKey(ctx context.Context, ownerID, objectKey, actorID, actorRole, reason string) (bool, error)
 	DeleteByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (bool, error)
 	ListByOwner(ctx context.Context, ownerID string) ([]model.ObjectRecord, error)
+	ListByOwnerWithFilters(ctx context.Context, ownerID, permission, visibility, keyQuery string, limit, offset int) ([]model.ObjectRecord, error)
+	CountByOwnerWithFilters(ctx context.Context, ownerID, permission, visibility, keyQuery string) (int, error)
 	MarkAccessAudit(ctx context.Context, objectID, ownerID, action, status, sourceIP, userAgent string) error
 }
 
@@ -42,6 +46,14 @@ type Service struct {
 	httpClient        *http.Client
 	nodes             []string
 	replicationFactor int
+	shareMu           sync.RWMutex
+	shareLinks        map[string]shareLink
+}
+
+type shareLink struct {
+	OwnerID   string
+	ObjectKey string
+	ExpiresAt time.Time
 }
 
 func New(repo Repository, nodes []string, replicationFactor int) (*Service, error) {
@@ -60,6 +72,7 @@ func New(repo Repository, nodes []string, replicationFactor int) (*Service, erro
 		httpClient:        &http.Client{Timeout: 8 * time.Second},
 		nodes:             nodes,
 		replicationFactor: replicationFactor,
+		shareLinks:        make(map[string]shareLink),
 	}, nil
 }
 
@@ -164,6 +177,50 @@ func (s *Service) ListOwnerObjects(ctx context.Context, ownerID string) ([]model
 	return s.repo.ListByOwner(ctx, ownerID)
 }
 
+func (s *Service) ListOwnerObjectsPage(ctx context.Context, ownerID, permission, visibility, keyQuery string, limit, offset int) ([]model.ObjectRecord, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	permission = strings.TrimSpace(permission)
+	visibility = strings.TrimSpace(visibility)
+	keyQuery = strings.TrimSpace(keyQuery)
+
+	files, err := s.repo.ListByOwnerWithFilters(ctx, ownerID, permission, visibility, keyQuery, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	total, err := s.repo.CountByOwnerWithFilters(ctx, ownerID, permission, visibility, keyQuery)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return files, total, nil
+}
+
+func (s *Service) FileExists(ctx context.Context, ownerID, objectKey string) (bool, error) {
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return false, ErrInvalidKey
+	}
+
+	_, err := s.repo.FindByOwnerAndKey(ctx, ownerID, objectKey)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return true, nil
+}
+
 func (s *Service) MakePrivateRead(ctx context.Context, ownerID, objectKey string) error {
 	return s.setPermission(ctx, ownerID, objectKey, "private-read")
 }
@@ -221,6 +278,82 @@ func (s *Service) DownloadPublic(ctx context.Context, ownerID, objectKey string)
 			return model.ObjectRecord{}, nil, err
 		}
 	}
+	return rec, body, nil
+}
+
+func (s *Service) CreateTemporaryShareLink(ctx context.Context, ownerID, objectKey string, ttl time.Duration) (string, time.Time, error) {
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	if ttl > 24*time.Hour {
+		ttl = 24 * time.Hour
+	}
+
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return "", time.Time{}, ErrInvalidKey
+	}
+
+	rec, err := s.repo.FindByOwnerAndKey(ctx, ownerID, objectKey)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return "", time.Time{}, ErrNotFound
+		}
+		return "", time.Time{}, err
+	}
+	if rec.Visibility != "visible" {
+		return "", time.Time{}, ErrForbidden
+	}
+
+	token := uuid.NewString()
+	expiresAt := time.Now().Add(ttl)
+
+	s.shareMu.Lock()
+	s.shareLinks[token] = shareLink{OwnerID: ownerID, ObjectKey: objectKey, ExpiresAt: expiresAt}
+	s.shareMu.Unlock()
+
+	return token, expiresAt, nil
+}
+
+func (s *Service) DownloadByShareToken(ctx context.Context, token string) (model.ObjectRecord, []byte, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return model.ObjectRecord{}, nil, ErrInvalidKey
+	}
+
+	s.shareMu.RLock()
+	entry, ok := s.shareLinks[token]
+	s.shareMu.RUnlock()
+	if !ok {
+		return model.ObjectRecord{}, nil, ErrNotFound
+	}
+	if time.Now().After(entry.ExpiresAt) {
+		s.shareMu.Lock()
+		delete(s.shareLinks, token)
+		s.shareMu.Unlock()
+		return model.ObjectRecord{}, nil, ErrNotFound
+	}
+
+	rec, err := s.repo.FindByOwnerAndKey(ctx, entry.OwnerID, entry.ObjectKey)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return model.ObjectRecord{}, nil, ErrNotFound
+		}
+		return model.ObjectRecord{}, nil, err
+	}
+	if rec.Visibility != "visible" {
+		return model.ObjectRecord{}, nil, ErrForbidden
+	}
+
+	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
+	body, err := s.getFromNode(ctx, rec.PrimaryNode, storageKey)
+	if err != nil {
+		body, err = s.getFromNode(ctx, rec.ReplicaNode, storageKey)
+		if err != nil {
+			return model.ObjectRecord{}, nil, err
+		}
+	}
+
 	return rec, body, nil
 }
 
