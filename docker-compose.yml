@@ -1,0 +1,232 @@
+services:
+  postgres-auth:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  postgres-object:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: object_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-object-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d object_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ./migrations
+    environment:
+      AUTH_DB_DSN: ${AUTH_DB_DSN:-postgres://postgres:postgres@postgres-auth:5432/auth_db?sslmode=disable}
+      OBJECT_DB_DSN: ${OBJECT_DB_DSN:-postgres://postgres:postgres@postgres-object:5432/object_db?sslmode=disable}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-admin123}
+      USER_EMAIL: ${USER_EMAIL:-user@example.com}
+      USER_INITIAL_PASSWORD: ${USER_INITIAL_PASSWORD:-user123}
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      postgres-object:
+        condition: service_healthy
+    command: ["migrate-all"]
+    restart: "no"
+
+  seed-auth:
+    build:
+      context: ./migrations
+    environment:
+      AUTH_DB_DSN: ${AUTH_DB_DSN:-postgres://postgres:postgres@postgres-auth:5432/auth_db?sslmode=disable}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-admin123}
+      USER_EMAIL: ${USER_EMAIL:-user@example.com}
+      USER_INITIAL_PASSWORD: ${USER_INITIAL_PASSWORD:-user123}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres-auth:
+        condition: service_healthy
+    command: ["seed-auth"]
+    profiles: ["seed"]
+    restart: "no"
+
+  auth-service:
+    build:
+      context: ./auth-service
+    environment:
+      AUTH_PORT: ${AUTH_PORT:-8081}
+      AUTH_DB_DSN: ${AUTH_DB_DSN:-postgres://postgres:postgres@postgres-auth:5432/auth_db?sslmode=disable}
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      DEV_MODE: ${DEV_MODE:-false}
+      OTP_TTL: ${OTP_TTL:-5m}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      JWT_ISSUER: ${JWT_ISSUER:-cloudbin-auth}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-24h}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-CloudBin}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres-auth:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  object-api:
+    build:
+      context: ./object-api
+    environment:
+      OBJECT_API_PORT: ${OBJECT_API_PORT:-8082}
+      OBJECT_DB_DSN: ${OBJECT_DB_DSN:-postgres://postgres:postgres@postgres-object:5432/object_db?sslmode=disable}
+      STORAGE_NODES: ${STORAGE_NODES:-http://storage-node-1:8083,http://storage-node-2:8083,http://storage-node-3:8083}
+      REPLICATION_FACTOR: ${REPLICATION_FACTOR:-2}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      JWT_ISSUER: ${JWT_ISSUER:-cloudbin-auth}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres-object:
+        condition: service_healthy
+      storage-node-1:
+        condition: service_healthy
+      storage-node-2:
+        condition: service_healthy
+      storage-node-3:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+    environment:
+      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8081}
+      OBJECT_API_URL: ${OBJECT_API_URL:-http://object-api:8082}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      JWT_ISSUER: ${JWT_ISSUER:-cloudbin-auth}
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      object-api:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  storage-node-1:
+    build:
+      context: ./storage-node
+    environment:
+      STORAGE_NODE_ID: ${STORAGE_NODE_ID_1:-node-1}
+      STORAGE_PORT: ${STORAGE_PORT:-8083}
+      STORAGE_ROOT: ${STORAGE_ROOT:-/data}
+    ports:
+      - "8083:8083"
+    volumes:
+      - storage-node-1-data:/data
+    user: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  storage-node-2:
+    build:
+      context: ./storage-node
+    environment:
+      STORAGE_NODE_ID: ${STORAGE_NODE_ID_2:-node-2}
+      STORAGE_PORT: ${STORAGE_PORT:-8083}
+      STORAGE_ROOT: ${STORAGE_ROOT:-/data}
+    ports:
+      - "8084:8083"
+    volumes:
+      - storage-node-2-data:/data
+    user: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  storage-node-3:
+    build:
+      context: ./storage-node
+    environment:
+      STORAGE_NODE_ID: ${STORAGE_NODE_ID_3:-node-3}
+      STORAGE_PORT: ${STORAGE_PORT:-8083}
+      STORAGE_ROOT: ${STORAGE_ROOT:-/data}
+    ports:
+      - "8085:8083"
+    volumes:
+      - storage-node-3-data:/data
+    user: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres-auth-data:
+  postgres-object-data:
+  redis-data:
+  storage-node-1-data:
+  storage-node-2-data:
+  storage-node-3-data:
