@@ -27,3 +27,17 @@ CloudBin is a learning-focused distributed object storage system. It lets you up
 cd /Users/paranietharan/Documents/codes/CloudBin
 docker compose up --build
 ```
+
+## Completely run docker
+```bash
+docker compose --profile seed up --build
+```
+
+## Stop the docker
+```bash
+docker compose down --volumes --remove-orphans
+```
+
+```bash
+docker compose down --volumes --remove-orphans --rmi all
+```

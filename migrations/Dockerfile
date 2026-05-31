@@ -15,6 +15,8 @@ WORKDIR /app/migrations
 
 RUN mkdir -p /app/migrations
 COPY --from=builder /out/migrations /app/migrations/migrations
+COPY auth /app/migrations/auth
+COPY object /app/migrations/object
 COPY docker-entrypoint.sh /app/migrations/docker-entrypoint.sh
 RUN chmod +x /app/migrations/docker-entrypoint.sh
 
