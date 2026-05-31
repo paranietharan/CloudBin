@@ -23,16 +23,16 @@ type EmailService struct {
 
 func NewEmailService(smtpHost string, smtpPort int, smtpUser, smtpPass, fromEmail, fromName string) *EmailService {
 	if smtpHost == "" {
-		smtpHost = "smtp-relay.brevo.com"
+		smtpHost = "smtp.gmail.com"
 	}
 	if smtpPort <= 0 {
 		smtpPort = 587
 	}
 	if fromEmail == "" {
-		fromEmail = "paranietharan64@gmail.com"
+		fromEmail = smtpUser
 	}
 	if fromName == "" {
-		fromName = "Parani Software solutions"
+		fromName = "CloudBin"
 	}
 
 	return &EmailService{
