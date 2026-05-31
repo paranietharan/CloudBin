@@ -16,9 +16,9 @@ type Config struct {
 	JWTSecret     string
 	JWTIssuer     string
 	JWTAccessTTL  string
-	SMTPServer    string
+	SMTPHost      string
 	SMTPPort      int
-	SMTPLogin     string
+	SMTPUser      string
 	SMTPPassword  string
 	SMTPFromEmail string
 	SMTPFromName  string
@@ -37,12 +37,12 @@ func Load() Config {
 		JWTSecret:     getenv("JWT_SECRET", "change-me"),
 		JWTIssuer:     getenv("JWT_ISSUER", "cloudbin-auth"),
 		JWTAccessTTL:  getenv("JWT_ACCESS_TTL", "24h"),
-		SMTPServer:    getenv("SMTP_SERVER", "smtp-relay.brevo.com"),
+		SMTPHost:      getenv("SMTP_HOST", "smtp.gmail.com"),
 		SMTPPort:      getenvInt("SMTP_PORT", 587),
-		SMTPLogin:     getenv("SMTP_LOGIN", getenv("SMTP_HOST", "")),
-		SMTPPassword:  getenv("SMTP_PASSWORD", getenv("SMTP_KEY", "")),
-		SMTPFromEmail: getenv("SMTP_FROM_EMAIL", getenv("BREVO_FROM_EMAIL", "no-reply@cloudbin.local")),
-		SMTPFromName:  getenv("SMTP_FROM_NAME", getenv("BREVO_FROM_NAME", "CloudBin")),
+		SMTPUser:      getenv("SMTP_USER", ""),
+		SMTPPassword:  getenv("SMTP_PASSWORD", ""),
+		SMTPFromEmail: getenv("SMTP_FROM_EMAIL", getenv("SMTP_USER", "")),
+		SMTPFromName:  getenv("SMTP_FROM_NAME", "CloudBin"),
 	}
 }
 
