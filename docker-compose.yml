@@ -8,10 +8,11 @@ services:
     volumes:
       - postgres-auth-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
       timeout: 5s
-      retries: 20
+      retries: 30
+      start_period: 20s
     restart: unless-stopped
 
   postgres-object:
@@ -23,10 +24,11 @@ services:
     volumes:
       - postgres-object-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d object_db"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
       timeout: 5s
-      retries: 20
+      retries: 30
+      start_period: 20s
     restart: unless-stopped
 
   redis:
@@ -119,6 +121,9 @@ services:
     environment:
       OBJECT_API_PORT: ${OBJECT_API_PORT:-8082}
       OBJECT_DB_DSN: ${OBJECT_DB_DSN:-postgres://postgres:postgres@postgres-object:5432/object_db?sslmode=disable}
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
       STORAGE_NODES: ${STORAGE_NODES:-http://storage-node-1:8083,http://storage-node-2:8083,http://storage-node-3:8083}
       REPLICATION_FACTOR: ${REPLICATION_FACTOR:-2}
       JWT_SECRET: ${JWT_SECRET:-change-me}
@@ -127,6 +132,8 @@ services:
       migrate:
         condition: service_completed_successfully
       postgres-object:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       storage-node-1:
         condition: service_healthy

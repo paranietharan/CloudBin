@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -17,13 +17,15 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 type HTTP struct {
-	svc       *service.Service
-	jwtSecret string
-	jwtIssuer string
-	limiter   *fixedWindowLimiter
+	svc         *service.Service
+	jwtSecret   string
+	jwtIssuer   string
+	redisClient *redis.Client
+	limiter     *fixedWindowLimiter
 }
 
 type principal struct {
@@ -55,12 +57,13 @@ type fixedWindowLimiter struct {
 	entries map[string]windowCounter
 }
 
-func NewHTTP(svc *service.Service, jwtSecret, jwtIssuer string) *HTTP {
+func NewHTTP(svc *service.Service, jwtSecret, jwtIssuer string, redisClient *redis.Client) *HTTP {
 	return &HTTP{
-		svc:       svc,
-		jwtSecret: jwtSecret,
-		jwtIssuer: jwtIssuer,
-		limiter:   &fixedWindowLimiter{entries: make(map[string]windowCounter)},
+		svc:         svc,
+		jwtSecret:   jwtSecret,
+		jwtIssuer:   jwtIssuer,
+		redisClient: redisClient,
+		limiter:     &fixedWindowLimiter{entries: make(map[string]windowCounter)},
 	}
 }
 
@@ -68,6 +71,15 @@ func (l *fixedWindowLimiter) Allow(key string, limit int, window time.Duration) 
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// Periodic cleanup of stale entries to prevent memory leak
+	if len(l.entries) > 1000 {
+		for k, v := range l.entries {
+			if now.Sub(v.windowStart) >= window*2 {
+				delete(l.entries, k)
+			}
+		}
+	}
 
 	entry, ok := l.entries[key]
 	if !ok || now.Sub(entry.windowStart) >= window {
@@ -93,7 +105,26 @@ func (h *HTTP) allowByUserAndIP(r *http.Request, userID, action string, limit in
 	if ip == "" {
 		ip = "unknown"
 	}
+
+	if h.redisClient != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		return h.allowRedis(ctx, fmt.Sprintf("ratelimit:user:%s:%s", userID, action), limit, window) &&
+			h.allowRedis(ctx, fmt.Sprintf("ratelimit:ip:%s:%s", ip, action), limit, window)
+	}
+
 	return h.limiter.Allow(userID+":"+action, limit, window) && h.limiter.Allow(ip+":"+action, limit, window)
+}
+
+func (h *HTTP) allowRedis(ctx context.Context, key string, limit int, window time.Duration) bool {
+	cnt, err := h.redisClient.Incr(ctx, key).Result()
+	if err != nil {
+		return true // Fail open on Redis error
+	}
+	if cnt == 1 {
+		_ = h.redisClient.Expire(ctx, key, window).Err()
+	}
+	return cnt <= int64(limit)
 }
 
 func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
@@ -293,8 +324,7 @@ func (h *HTTP) handleAdminHideAlias(w http.ResponseWriter, r *http.Request) {
 	}
 	ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id"))
 	if ownerID == "" {
-		bodyOwner := readOwnerID(r)
-		ownerID = bodyOwner
+		ownerID = readOwnerID(r)
 	}
 	if ownerID == "" {
 		respondError(w, http.StatusBadRequest, "owner_id is required")
@@ -433,15 +463,12 @@ func (h *HTTP) handleMakePrivateRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := readObjectKey(r)
-	log.Printf("make-private-read requested: owner_id=%s object_key=%s role=%s", p.UserID, key, p.Role)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := h.svc.MakePrivateRead(ctx, p.UserID, key); err != nil {
-		log.Printf("make-private-read failed: owner_id=%s object_key=%s err=%v", p.UserID, key, err)
 		h.mapError(w, err)
 		return
 	}
-	log.Printf("make-private-read success: owner_id=%s object_key=%s", p.UserID, key)
 	respondJSON(w, http.StatusOK, map[string]string{"message": "permission set to private-read"})
 }
 
@@ -460,15 +487,12 @@ func (h *HTTP) handleMakePublicRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := readObjectKey(r)
-	log.Printf("make-public-read requested: owner_id=%s object_key=%s role=%s", p.UserID, key, p.Role)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := h.svc.MakePublicRead(ctx, p.UserID, key); err != nil {
-		log.Printf("make-public-read failed: owner_id=%s object_key=%s err=%v", p.UserID, key, err)
 		h.mapError(w, err)
 		return
 	}
-	log.Printf("make-public-read success: owner_id=%s object_key=%s", p.UserID, key)
 	respondJSON(w, http.StatusOK, map[string]string{"message": "permission set to public-read"})
 }
 
@@ -486,17 +510,15 @@ func (h *HTTP) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "owner_id and object_key are required")
 		return
 	}
-	log.Printf("public download requested: owner_id=%s object_key=%s", ownerID, key)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	rec, data, err := h.svc.DownloadPublic(ctx, ownerID, key)
+	rec, stream, err := h.svc.DownloadPublic(ctx, ownerID, key)
 	if err != nil {
-		log.Printf("public download failed: owner_id=%s object_key=%s err=%v", ownerID, key, err)
 		h.mapError(w, err)
 		return
 	}
-	log.Printf("public download success: owner_id=%s object_key=%s permission=%s", ownerID, key, rec.Permission)
+	defer stream.Close()
 
 	if rec.ContentType != "" {
 		w.Header().Set("Content-Type", rec.ContentType)
@@ -507,7 +529,7 @@ func (h *HTTP) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", rec.ETag)
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	_, _ = io.Copy(w, stream)
 }
 
 func (h *HTTP) handleCreateShareLink(w http.ResponseWriter, r *http.Request) {
@@ -558,13 +580,14 @@ func (h *HTTP) handleDownloadByShareLink(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	rec, data, err := h.svc.DownloadByShareToken(ctx, token)
+	rec, stream, err := h.svc.DownloadByShareToken(ctx, token)
 	if err != nil {
 		h.mapError(w, err)
 		return
 	}
+	defer stream.Close()
 
 	if rec.ContentType != "" {
 		w.Header().Set("Content-Type", rec.ContentType)
@@ -575,7 +598,7 @@ func (h *HTTP) handleDownloadByShareLink(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("ETag", rec.ETag)
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	_, _ = io.Copy(w, stream)
 }
 
 func (h *HTTP) uploadObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
@@ -593,7 +616,7 @@ func (h *HTTP) uploadObject(w http.ResponseWriter, r *http.Request, ownerID, key
 		respondError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := h.svc.Upload(ctx, ownerID, key, r.Header.Get("Content-Type"), data); err != nil {
 		h.mapError(w, err)
@@ -607,13 +630,14 @@ func (h *HTTP) downloadObject(w http.ResponseWriter, r *http.Request, ownerID, k
 		respondError(w, http.StatusBadRequest, "object key is required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	rec, data, err := h.svc.Download(ctx, ownerID, key)
+	rec, stream, err := h.svc.Download(ctx, ownerID, key)
 	if err != nil {
 		h.mapError(w, err)
 		return
 	}
+	defer stream.Close()
 
 	if rec.ContentType != "" {
 		w.Header().Set("Content-Type", rec.ContentType)
@@ -624,7 +648,7 @@ func (h *HTTP) downloadObject(w http.ResponseWriter, r *http.Request, ownerID, k
 		w.Header().Set("ETag", rec.ETag)
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	_, _ = io.Copy(w, stream)
 }
 
 func (h *HTTP) deleteObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
@@ -643,6 +667,16 @@ func (h *HTTP) deleteObject(w http.ResponseWriter, r *http.Request, ownerID, key
 
 func (h *HTTP) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Prefer verified headers from API Gateway if present
+		if headerUserID := strings.TrimSpace(r.Header.Get("X-User-ID")); headerUserID != "" {
+			role := strings.TrimSpace(r.Header.Get("X-User-Role"))
+			if role == "" {
+				role = "user"
+			}
+			next(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal{UserID: headerUserID, Role: role})))
+			return
+		}
+
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer"))
 		if token == "" {
@@ -689,8 +723,11 @@ func readObjectKey(r *http.Request) string {
 	if key != "" {
 		return key
 	}
+	if headerKey := strings.TrimSpace(r.Header.Get("X-Object-Key")); headerKey != "" {
+		return headerKey
+	}
 
-	if r.Body == nil {
+	if r.Body == nil || !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		return ""
 	}
 	buf, err := io.ReadAll(r.Body)
@@ -708,7 +745,10 @@ func readObjectKey(r *http.Request) string {
 }
 
 func readOwnerID(r *http.Request) string {
-	if r.Body == nil {
+	if ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id")); ownerID != "" {
+		return ownerID
+	}
+	if r.Body == nil || !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		return ""
 	}
 	buf, err := io.ReadAll(r.Body)

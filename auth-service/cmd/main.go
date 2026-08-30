@@ -59,8 +59,19 @@ func projectRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if filepath.Base(cwd) == "migrations" {
-		return filepath.Dir(cwd), nil
+	dir := cwd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return dir, nil
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".env")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 	return cwd, nil
 }

@@ -16,7 +16,28 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func New(cfg config.Config) (*http.Server, error) {
+type Server struct {
+	http *http.Server
+	db   *pgxpool.Pool
+	rdb  *redis.Client
+}
+
+func (s *Server) ListenAndServe() error {
+	return s.http.ListenAndServe()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	err := s.http.Shutdown(ctx)
+	if s.db != nil {
+		s.db.Close()
+	}
+	if s.rdb != nil {
+		_ = s.rdb.Close()
+	}
+	return err
+}
+
+func New(cfg config.Config) (*Server, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -25,6 +46,7 @@ func New(cfg config.Config) (*http.Server, error) {
 		return nil, fmt.Errorf("connect auth db: %w", err)
 	}
 	if err := db.Ping(ctx); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("ping auth db: %w", err)
 	}
 
@@ -34,6 +56,7 @@ func New(cfg config.Config) (*http.Server, error) {
 		DB:       cfg.RedisDB,
 	})
 	if err := rdb.Ping(ctx).Err(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("ping redis: %w", err)
 	}
 
@@ -51,6 +74,7 @@ func New(cfg config.Config) (*http.Server, error) {
 	authService := service.New(
 		repo,
 		otpStore,
+		rdb,
 		cfg.JWTSecret,
 		cfg.JWTIssuer,
 		jwtTTL,
@@ -67,11 +91,15 @@ func New(cfg config.Config) (*http.Server, error) {
 	mux := http.NewServeMux()
 	httpHandler.RegisterRoutes(mux)
 
-	return &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+	return &Server{
+		http: &http.Server{
+			Addr:         ":" + cfg.Port,
+			Handler:      mux,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		},
+		db:  db,
+		rdb: rdb,
 	}, nil
 }

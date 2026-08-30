@@ -292,8 +292,13 @@ func (h *HTTP) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		subject, _ := claims["sub"].(string)
 		issuer, _ := claims["iss"].(string)
 		role, _ := claims["role"].(string)
+		jti, _ := claims["jti"].(string)
 		if subject == "" || issuer != h.jwtIssuer {
 			respondError(w, http.StatusUnauthorized, "invalid token issuer")
+			return
+		}
+		if jti != "" && h.svc.IsTokenRevoked(r.Context(), jti) {
+			respondError(w, http.StatusUnauthorized, "token has been revoked")
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal{UserID: subject, Role: role})))

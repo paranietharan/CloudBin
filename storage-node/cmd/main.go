@@ -2,10 +2,15 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"cloudbin-storage-node/internal/config"
 	"cloudbin-storage-node/internal/server"
@@ -26,8 +31,25 @@ func main() {
 	}
 
 	log.Printf("storage node %s listening on :%s", cfg.NodeID, cfg.Port)
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("storage node stopped: %v", err)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("storage node stopped: %v", err)
+		}
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("storage node shutdown error: %v", err)
+		}
 	}
 }
 
@@ -36,8 +58,19 @@ func projectRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if filepath.Base(cwd) == "migrations" {
-		return filepath.Dir(cwd), nil
+	dir := cwd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return dir, nil
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".env")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 	return cwd, nil
 }
@@ -76,4 +109,3 @@ func loadDotEnv(path string) {
 		log.Printf("warning: failed to scan %s: %v", path, err)
 	}
 }
-
