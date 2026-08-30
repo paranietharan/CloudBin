@@ -9,6 +9,7 @@ import (
 	"cloudbin-auth-service/internal/auth/model"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -109,15 +110,20 @@ func (p *Postgres) ListUserTokens(ctx context.Context, userID string) ([]model.T
 	return tokens, rows.Err()
 }
 
-func (p *Postgres) RevokeToken(ctx context.Context, userID, tokenID uuid.UUID) (bool, error) {
-	tag, err := p.db.Exec(ctx,
-		`UPDATE user_tokens SET revoked_at = NOW() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+func (p *Postgres) RevokeToken(ctx context.Context, userID, tokenID uuid.UUID) (string, time.Time, bool, error) {
+	var jti string
+	var expiresAt time.Time
+	err := p.db.QueryRow(ctx,
+		`UPDATE user_tokens SET revoked_at = NOW() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL RETURNING jti, expires_at`,
 		tokenID, userID,
-	)
-	if err != nil {
-		return false, err
+	).Scan(&jti, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Time{}, false, nil
 	}
-	return tag.RowsAffected() > 0, nil
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	return jti, expiresAt, true, nil
 }
 
 func isUniqueViolation(err error) bool {

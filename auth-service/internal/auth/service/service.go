@@ -43,7 +43,7 @@ type UserRepository interface {
 	UpdatePasswordByEmail(ctx context.Context, email, passwordHash string) (bool, error)
 	InsertUserToken(ctx context.Context, userID uuid.UUID, jti, tokenName, tokenHash string, expiresAt time.Time) error
 	ListUserTokens(ctx context.Context, userID string) ([]model.TokenInfo, error)
-	RevokeToken(ctx context.Context, userID, tokenID uuid.UUID) (bool, error)
+	RevokeToken(ctx context.Context, userID, tokenID uuid.UUID) (string, time.Time, bool, error)
 }
 
 type OTPStore interface {
@@ -55,6 +55,7 @@ type OTPStore interface {
 type Service struct {
 	repo         UserRepository
 	otpStore     OTPStore
+	redisClient  *redis.Client
 	jwtSecret    string
 	jwtIssuer    string
 	jwtTTL       time.Duration
@@ -62,13 +63,14 @@ type Service struct {
 	emailService *email.EmailService
 }
 
-func New(repo UserRepository, otpStore *otp.Store, jwtSecret, jwtIssuer string, jwtTTL time.Duration, devMode bool, smtpHost string, smtpPort int, smtpUser, smtpPass, smtpFromEmail, smtpFromName string) *Service {
+func New(repo UserRepository, otpStore *otp.Store, redisClient *redis.Client, jwtSecret, jwtIssuer string, jwtTTL time.Duration, devMode bool, smtpHost string, smtpPort int, smtpUser, smtpPass, smtpFromEmail, smtpFromName string) *Service {
 	if jwtTTL <= 0 {
 		jwtTTL = 24 * time.Hour
 	}
 	return &Service{
 		repo:         repo,
 		otpStore:     otpStore,
+		redisClient:  redisClient,
 		jwtSecret:    jwtSecret,
 		jwtIssuer:    jwtIssuer,
 		jwtTTL:       jwtTTL,
@@ -301,14 +303,34 @@ func (s *Service) DeleteToken(ctx context.Context, userID, tokenID string) error
 		return err
 	}
 
-	ok, err := s.repo.RevokeToken(ctx, uid, tid)
+	jti, exp, ok, err := s.repo.RevokeToken(ctx, uid, tid)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return ErrTokenNotFound
 	}
+
+	if s.redisClient != nil && jti != "" {
+		ttl := time.Until(exp)
+		if ttl <= 0 {
+			ttl = time.Minute
+		}
+		_ = s.redisClient.Set(ctx, "auth:revoked:"+jti, "1", ttl).Err()
+	}
+
 	return nil
+}
+
+func (s *Service) IsTokenRevoked(ctx context.Context, jti string) bool {
+	if s.redisClient == nil || jti == "" {
+		return false
+	}
+	val, err := s.redisClient.Exists(ctx, "auth:revoked:"+jti).Result()
+	if err != nil {
+		return false
+	}
+	return val > 0
 }
 
 func (s *Service) issueToken(userID, role, tokenID string) (string, string, time.Time, error) {

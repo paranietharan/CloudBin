@@ -5,12 +5,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
-	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"cloudbin-object-api/internal/object/repository"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -41,22 +43,85 @@ type Repository interface {
 	MarkAccessAudit(ctx context.Context, objectID, ownerID, action, status, sourceIP, userAgent string) error
 }
 
+type HashRing struct {
+	nodes        []string
+	virtualNodes map[uint64]string
+	keys         []uint64
+}
+
+func NewHashRing(nodes []string, replicasPerNode int) *HashRing {
+	hr := &HashRing{
+		nodes:        nodes,
+		virtualNodes: make(map[uint64]string),
+	}
+	if replicasPerNode <= 0 {
+		replicasPerNode = 50
+	}
+	for _, node := range nodes {
+		for i := 0; i < replicasPerNode; i++ {
+			vKey := fmt.Sprintf("%s#%d", node, i)
+			h := fnv.New64a()
+			_, _ = h.Write([]byte(vKey))
+			sum := h.Sum64()
+			hr.virtualNodes[sum] = node
+			hr.keys = append(hr.keys, sum)
+		}
+	}
+	sort.Slice(hr.keys, func(i, j int) bool { return hr.keys[i] < hr.keys[j] })
+	return hr
+}
+
+func (hr *HashRing) GetNodes(key string, count int) []string {
+	if len(hr.nodes) == 0 || count <= 0 {
+		return nil
+	}
+	if count > len(hr.nodes) {
+		count = len(hr.nodes)
+	}
+
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	target := h.Sum64()
+
+	idx := sort.Search(len(hr.keys), func(i int) bool {
+		return hr.keys[i] >= target
+	})
+	if idx == len(hr.keys) {
+		idx = 0
+	}
+
+	selected := make([]string, 0, count)
+	seen := make(map[string]bool)
+
+	for i := 0; i < len(hr.keys) && len(selected) < count; i++ {
+		currIdx := (idx + i) % len(hr.keys)
+		node := hr.virtualNodes[hr.keys[currIdx]]
+		if !seen[node] {
+			seen[node] = true
+			selected = append(selected, node)
+		}
+	}
+	return selected
+}
+
 type Service struct {
 	repo              Repository
 	httpClient        *http.Client
 	nodes             []string
+	hashRing          *HashRing
 	replicationFactor int
-	shareMu           sync.RWMutex
-	shareLinks        map[string]shareLink
+	redisClient       *redis.Client
+	fallbackShareMu   sync.RWMutex
+	fallbackShare     map[string]shareLinkPayload
 }
 
-type shareLink struct {
-	OwnerID   string
-	ObjectKey string
-	ExpiresAt time.Time
+type shareLinkPayload struct {
+	OwnerID   string    `json:"owner_id"`
+	ObjectKey string    `json:"object_key"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func New(repo Repository, nodes []string, replicationFactor int) (*Service, error) {
+func New(repo Repository, nodes []string, replicationFactor int, redisClient *redis.Client) (*Service, error) {
 	if len(nodes) < 2 {
 		return nil, ErrInvalidNodeConfig
 	}
@@ -64,15 +129,17 @@ func New(repo Repository, nodes []string, replicationFactor int) (*Service, erro
 		replicationFactor = 2
 	}
 	if replicationFactor > len(nodes) {
-		return nil, ErrInvalidNodeConfig
+		replicationFactor = len(nodes)
 	}
 
 	return &Service{
 		repo:              repo,
-		httpClient:        &http.Client{Timeout: 8 * time.Second},
+		httpClient:        &http.Client{Timeout: 30 * time.Second},
 		nodes:             nodes,
+		hashRing:          NewHashRing(nodes, 50),
 		replicationFactor: replicationFactor,
-		shareLinks:        make(map[string]shareLink),
+		redisClient:       redisClient,
+		fallbackShare:     make(map[string]shareLinkPayload),
 	}, nil
 }
 
@@ -85,12 +152,17 @@ func (s *Service) Upload(ctx context.Context, ownerID, objectKey, contentType st
 		contentType = "application/octet-stream"
 	}
 
-	primary, replica := s.placement(objectKey)
+	targetNodes := s.placement(ownerID, objectKey)
+	if len(targetNodes) < 2 {
+		return ErrInvalidNodeConfig
+	}
+	primary := targetNodes[0]
+	replica := targetNodes[1]
 	storageKey := storagePath(ownerID, objectKey)
 
 	var wg sync.WaitGroup
-	results := make(chan error, 2)
-	for _, node := range []string{primary, replica} {
+	results := make(chan error, len(targetNodes))
+	for _, node := range targetNodes {
 		n := node
 		wg.Add(1)
 		go func() {
@@ -108,8 +180,9 @@ func (s *Service) Upload(ctx context.Context, ownerID, objectKey, contentType st
 		}
 	}
 	if fails > 0 {
-		_ = s.deleteFromNode(ctx, primary, storageKey)
-		_ = s.deleteFromNode(ctx, replica, storageKey)
+		for _, node := range targetNodes {
+			_ = s.deleteFromNode(context.Background(), node, storageKey)
+		}
 		return ErrReplicationWriteFail
 	}
 
@@ -119,7 +192,7 @@ func (s *Service) Upload(ctx context.Context, ownerID, objectKey, contentType st
 	return err
 }
 
-func (s *Service) Download(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, []byte, error) {
+func (s *Service) Download(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, io.ReadCloser, error) {
 	rec, err := s.repo.FindByOwnerAndKey(ctx, ownerID, objectKey)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -129,14 +202,14 @@ func (s *Service) Download(ctx context.Context, ownerID, objectKey string) (mode
 	}
 
 	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
-	body, err := s.getFromNode(ctx, rec.PrimaryNode, storageKey)
-	if err != nil {
-		body, err = s.getFromNode(ctx, rec.ReplicaNode, storageKey)
+	stream, err := s.getFromNodeStream(ctx, rec.PrimaryNode, storageKey)
+	if err != nil && rec.ReplicaNode != "" {
+		stream, err = s.getFromNodeStream(ctx, rec.ReplicaNode, storageKey)
 		if err != nil {
 			return model.ObjectRecord{}, nil, err
 		}
 	}
-	return rec, body, nil
+	return rec, stream, nil
 }
 
 func (s *Service) Delete(ctx context.Context, ownerID, objectKey string) error {
@@ -149,8 +222,12 @@ func (s *Service) Delete(ctx context.Context, ownerID, objectKey string) error {
 	}
 
 	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
-	_ = s.deleteFromNode(ctx, rec.PrimaryNode, storageKey)
-	_ = s.deleteFromNode(ctx, rec.ReplicaNode, storageKey)
+	if rec.PrimaryNode != "" {
+		_ = s.deleteFromNode(ctx, rec.PrimaryNode, storageKey)
+	}
+	if rec.ReplicaNode != "" {
+		_ = s.deleteFromNode(ctx, rec.ReplicaNode, storageKey)
+	}
 
 	ok, err := s.repo.DeleteByOwnerAndKey(ctx, ownerID, objectKey)
 	if err != nil {
@@ -239,46 +316,37 @@ func (s *Service) setPermission(ctx context.Context, ownerID, objectKey, permiss
 		return ErrInvalidKey
 	}
 
-	log.Printf("set-permission requested: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, permission)
-
 	ok, err := s.repo.SetPermissionByOwnerAndKey(ctx, ownerID, objectKey, permission)
 	if err != nil {
-		log.Printf("set-permission repo error: owner_id=%s object_key=%s permission=%s err=%v", ownerID, objectKey, permission, err)
 		return err
 	}
 	if !ok {
-		log.Printf("set-permission not found: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, permission)
 		return ErrNotFound
 	}
-	log.Printf("set-permission success: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, permission)
 	return nil
 }
 
-func (s *Service) DownloadPublic(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, []byte, error) {
+func (s *Service) DownloadPublic(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, io.ReadCloser, error) {
 	rec, err := s.repo.FindByOwnerAndKey(ctx, ownerID, objectKey)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			log.Printf("public download not found: owner_id=%s object_key=%s", ownerID, objectKey)
 			return model.ObjectRecord{}, nil, ErrNotFound
 		}
-		log.Printf("public download repo error: owner_id=%s object_key=%s err=%v", ownerID, objectKey, err)
 		return model.ObjectRecord{}, nil, err
 	}
 	if rec.Permission != "public-read" || rec.Visibility != "visible" {
-		log.Printf("public download forbidden: owner_id=%s object_key=%s permission=%s visibility=%s", ownerID, objectKey, rec.Permission, rec.Visibility)
 		return model.ObjectRecord{}, nil, ErrForbidden
 	}
-	log.Printf("public download allowed: owner_id=%s object_key=%s permission=%s", ownerID, objectKey, rec.Permission)
 
 	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
-	body, err := s.getFromNode(ctx, rec.PrimaryNode, storageKey)
-	if err != nil {
-		body, err = s.getFromNode(ctx, rec.ReplicaNode, storageKey)
+	stream, err := s.getFromNodeStream(ctx, rec.PrimaryNode, storageKey)
+	if err != nil && rec.ReplicaNode != "" {
+		stream, err = s.getFromNodeStream(ctx, rec.ReplicaNode, storageKey)
 		if err != nil {
 			return model.ObjectRecord{}, nil, err
 		}
 	}
-	return rec, body, nil
+	return rec, stream, nil
 }
 
 func (s *Service) CreateTemporaryShareLink(ctx context.Context, ownerID, objectKey string, ttl time.Duration) (string, time.Time, error) {
@@ -307,31 +375,43 @@ func (s *Service) CreateTemporaryShareLink(ctx context.Context, ownerID, objectK
 
 	token := uuid.NewString()
 	expiresAt := time.Now().Add(ttl)
+	payload := shareLinkPayload{OwnerID: ownerID, ObjectKey: objectKey, ExpiresAt: expiresAt}
 
-	s.shareMu.Lock()
-	s.shareLinks[token] = shareLink{OwnerID: ownerID, ObjectKey: objectKey, ExpiresAt: expiresAt}
-	s.shareMu.Unlock()
+	if s.redisClient != nil {
+		raw, _ := json.Marshal(payload)
+		_ = s.redisClient.Set(ctx, "share:link:"+token, raw, ttl).Err()
+	} else {
+		s.fallbackShareMu.Lock()
+		s.fallbackShare[token] = payload
+		s.fallbackShareMu.Unlock()
+	}
 
 	return token, expiresAt, nil
 }
 
-func (s *Service) DownloadByShareToken(ctx context.Context, token string) (model.ObjectRecord, []byte, error) {
+func (s *Service) DownloadByShareToken(ctx context.Context, token string) (model.ObjectRecord, io.ReadCloser, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return model.ObjectRecord{}, nil, ErrInvalidKey
 	}
 
-	s.shareMu.RLock()
-	entry, ok := s.shareLinks[token]
-	s.shareMu.RUnlock()
-	if !ok {
-		return model.ObjectRecord{}, nil, ErrNotFound
-	}
-	if time.Now().After(entry.ExpiresAt) {
-		s.shareMu.Lock()
-		delete(s.shareLinks, token)
-		s.shareMu.Unlock()
-		return model.ObjectRecord{}, nil, ErrNotFound
+	var entry shareLinkPayload
+	if s.redisClient != nil {
+		raw, err := s.redisClient.Get(ctx, "share:link:"+token).Result()
+		if err != nil {
+			return model.ObjectRecord{}, nil, ErrNotFound
+		}
+		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
+			return model.ObjectRecord{}, nil, ErrNotFound
+		}
+	} else {
+		s.fallbackShareMu.RLock()
+		item, ok := s.fallbackShare[token]
+		s.fallbackShareMu.RUnlock()
+		if !ok || time.Now().After(item.ExpiresAt) {
+			return model.ObjectRecord{}, nil, ErrNotFound
+		}
+		entry = item
 	}
 
 	rec, err := s.repo.FindByOwnerAndKey(ctx, entry.OwnerID, entry.ObjectKey)
@@ -346,23 +426,27 @@ func (s *Service) DownloadByShareToken(ctx context.Context, token string) (model
 	}
 
 	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
-	body, err := s.getFromNode(ctx, rec.PrimaryNode, storageKey)
-	if err != nil {
-		body, err = s.getFromNode(ctx, rec.ReplicaNode, storageKey)
+	stream, err := s.getFromNodeStream(ctx, rec.PrimaryNode, storageKey)
+	if err != nil && rec.ReplicaNode != "" {
+		stream, err = s.getFromNodeStream(ctx, rec.ReplicaNode, storageKey)
 		if err != nil {
 			return model.ObjectRecord{}, nil, err
 		}
 	}
 
-	return rec, body, nil
+	return rec, stream, nil
 }
 
-func (s *Service) placement(objectKey string) (string, string) {
+func (s *Service) placement(ownerID, objectKey string) []string {
+	key := storagePath(ownerID, objectKey)
+	if s.hashRing != nil {
+		return s.hashRing.GetNodes(key, s.replicationFactor)
+	}
 	h := fnv.New64a()
-	_, _ = h.Write([]byte(objectKey))
-	primaryIdx := int(h.Sum64() % uint64(len(s.nodes)))
-	replicaIdx := (primaryIdx + 1) % len(s.nodes)
-	return s.nodes[primaryIdx], s.nodes[replicaIdx]
+	_, _ = h.Write([]byte(key))
+	pIdx := int(h.Sum64() % uint64(len(s.nodes)))
+	rIdx := (pIdx + 1) % len(s.nodes)
+	return []string{s.nodes[pIdx], s.nodes[rIdx]}
 }
 
 func (s *Service) putToNode(ctx context.Context, node, objectKey, contentType string, data []byte) error {
@@ -383,7 +467,7 @@ func (s *Service) putToNode(ctx context.Context, node, objectKey, contentType st
 	return fmt.Errorf("storage node put failed: %d", res.StatusCode)
 }
 
-func (s *Service) getFromNode(ctx context.Context, node, objectKey string) ([]byte, error) {
+func (s *Service) getFromNodeStream(ctx context.Context, node, objectKey string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/objects/%s", strings.TrimRight(node, "/"), objectKey), nil)
 	if err != nil {
 		return nil, err
@@ -392,11 +476,11 @@ func (s *Service) getFromNode(ctx context.Context, node, objectKey string) ([]by
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
+		_ = res.Body.Close()
 		return nil, fmt.Errorf("storage node get failed: %d", res.StatusCode)
 	}
-	return io.ReadAll(res.Body)
+	return res.Body, nil
 }
 
 func (s *Service) deleteFromNode(ctx context.Context, node, objectKey string) error {

@@ -65,11 +65,27 @@ func (s *Store) Delete(key string) error {
 }
 
 func (s *Store) pathFor(key string) (string, error) {
-	clean := filepath.Clean("/" + strings.TrimSpace(key))
-	clean = strings.TrimPrefix(clean, "/")
-	if clean == "" || strings.HasPrefix(clean, "../") {
-		return "", errors.New("invalid object key")
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return "", errors.New("invalid object key: empty")
 	}
-	return filepath.Join(s.root, clean), nil
-}
 
+	clean := filepath.Clean("/" + trimmed)
+	clean = strings.TrimPrefix(clean, "/")
+	if clean == "" || clean == "." || strings.HasPrefix(clean, "..") {
+		return "", errors.New("invalid object key: path traversal detected")
+	}
+
+	absRoot, err := filepath.Abs(s.root)
+	if err != nil {
+		return "", err
+	}
+
+	targetPath := filepath.Join(absRoot, clean)
+	rel, err := filepath.Rel(absRoot, targetPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", errors.New("invalid object key: path escapes root")
+	}
+
+	return targetPath, nil
+}

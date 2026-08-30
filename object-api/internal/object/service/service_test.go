@@ -54,7 +54,7 @@ func (m *mockRepo) MarkAccessAudit(ctx context.Context, objectID, ownerID, actio
 
 func TestMakePublicReadSuccess(t *testing.T) {
 	repo := &mockRepo{setPermissionOK: true}
-	svc, err := New(repo, []string{"http://n1", "http://n2"}, 2)
+	svc, err := New(repo, []string{"http://n1", "http://n2"}, 2, nil)
 	if err != nil {
 		t.Fatalf("unexpected new service error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestMakePublicReadSuccess(t *testing.T) {
 
 func TestMakePrivateReadNotFound(t *testing.T) {
 	repo := &mockRepo{setPermissionOK: false}
-	svc, err := New(repo, []string{"http://n1", "http://n2"}, 2)
+	svc, err := New(repo, []string{"http://n1", "http://n2"}, 2, nil)
 	if err != nil {
 		t.Fatalf("unexpected new service error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestMakePrivateReadNotFound(t *testing.T) {
 
 func TestCreateTemporaryShareLinkInvalidKey(t *testing.T) {
 	repo := &mockRepo{setPermissionOK: true}
-	svc, err := New(repo, []string{"http://n1", "http://n2"}, 2)
+	svc, err := New(repo, []string{"http://n1", "http://n2"}, 2, nil)
 	if err != nil {
 		t.Fatalf("unexpected new service error: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 func TestHandleCreateShareLinkMethodNotAllowed(t *testing.T) {
-	h := NewHTTP(nil, "secret", "issuer")
+	h := NewHTTP(nil, "secret", "issuer", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/share-link", nil)
 	w := httptest.NewRecorder()
 
@@ -19,7 +19,7 @@ func TestHandleCreateShareLinkMethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleDownloadByShareLinkMissingToken(t *testing.T) {
-	h := NewHTTP(nil, "secret", "issuer")
+	h := NewHTTP(nil, "secret", "issuer", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/share/download", nil)
 	w := httptest.NewRecorder()
 

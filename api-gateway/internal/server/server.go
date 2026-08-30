@@ -85,9 +85,19 @@ func New(cfg config.Config) *http.Server {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := publicRoutes[r.URL.Path]; !ok {
-			if err := validateBearerJWT(r.Header.Get("Authorization"), cfg.JWTSecret, cfg.JWTIssuer); err != nil {
+			claims, err := validateBearerJWT(r.Header.Get("Authorization"), cfg.JWTSecret, cfg.JWTIssuer)
+			if err != nil {
 				respondError(w, http.StatusUnauthorized, "unauthorized")
 				return
+			}
+			if claims.UserID != "" {
+				r.Header.Set("X-User-ID", claims.UserID)
+			}
+			if claims.Role != "" {
+				r.Header.Set("X-User-Role", claims.Role)
+			}
+			if claims.JTI != "" {
+				r.Header.Set("X-Token-JTI", claims.JTI)
 			}
 		}
 
@@ -108,9 +118,9 @@ func New(cfg config.Config) *http.Server {
 	s.http = &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      requestLoggingMiddleware(mux),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	return s.http
 }
@@ -129,13 +139,19 @@ func isObjectPath(path string) bool {
 	return false
 }
 
-func validateBearerJWT(authHeader, secret, issuer string) error {
+type TokenClaims struct {
+	UserID string
+	Role   string
+	JTI    string
+}
+
+func validateBearerJWT(authHeader, secret, issuer string) (*TokenClaims, error) {
 	token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer"))
 	if token == "" {
-		return errors.New("missing token")
+		return nil, errors.New("missing token")
 	}
 
-	claims := &jwt.RegisteredClaims{}
+	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
 		if t.Method != jwt.SigningMethodHS256 {
 			return nil, errors.New("unexpected signing method")
@@ -143,12 +159,23 @@ func validateBearerJWT(authHeader, secret, issuer string) error {
 		return []byte(secret), nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if claims.Subject == "" || claims.Issuer != issuer {
-		return errors.New("invalid claims")
+
+	subject, _ := claims["sub"].(string)
+	iss, _ := claims["iss"].(string)
+	role, _ := claims["role"].(string)
+	jti, _ := claims["jti"].(string)
+
+	if subject == "" || iss != issuer {
+		return nil, errors.New("invalid claims")
 	}
-	return nil
+
+	return &TokenClaims{
+		UserID: subject,
+		Role:   role,
+		JTI:    jti,
+	}, nil
 }
 
 func respondJSON(w http.ResponseWriter, status int, payload any) {

@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"path/filepath"
 
 	"gopkg.in/gomail.v2"
 )
@@ -19,6 +20,7 @@ type EmailService struct {
 	smtpPass  string
 	fromEmail string
 	fromName  string
+	templates *template.Template
 }
 
 func NewEmailService(smtpHost string, smtpPort int, smtpUser, smtpPass, fromEmail, fromName string) *EmailService {
@@ -35,6 +37,8 @@ func NewEmailService(smtpHost string, smtpPort int, smtpUser, smtpPass, fromEmai
 		fromName = "CloudBin"
 	}
 
+	tmpl, _ := template.ParseFS(templatesFS, "template/*.html")
+
 	return &EmailService{
 		smtpHost:  smtpHost,
 		smtpPort:  smtpPort,
@@ -42,6 +46,7 @@ func NewEmailService(smtpHost string, smtpPort int, smtpUser, smtpPass, fromEmai
 		smtpPass:  smtpPass,
 		fromEmail: fromEmail,
 		fromName:  fromName,
+		templates: tmpl,
 	}
 }
 
@@ -50,7 +55,7 @@ func (s *EmailService) IsConfigured() bool {
 }
 
 func (s *EmailService) SendAccountCreationOTPEmail(toEmail, otpCode string) error {
-	body, err := renderHTMLTemplate("template/user-creation-otp-template.html", struct {
+	body, err := s.renderTemplate("user-creation-otp-template.html", struct {
 		OTP string
 	}{OTP: otpCode})
 	if err != nil {
@@ -60,7 +65,7 @@ func (s *EmailService) SendAccountCreationOTPEmail(toEmail, otpCode string) erro
 }
 
 func (s *EmailService) SendForgotPasswordEmail(toEmail, otpCode string) error {
-	body, err := renderHTMLTemplate("template/forgot-password-email-template.html", struct {
+	body, err := s.renderTemplate("forgot-password-email-template.html", struct {
 		OTP string
 	}{OTP: otpCode})
 	if err != nil {
@@ -70,7 +75,7 @@ func (s *EmailService) SendForgotPasswordEmail(toEmail, otpCode string) error {
 }
 
 func (s *EmailService) SendAccountCreatedEmail(toEmail string) error {
-	body, err := renderHTMLTemplate("template/account-created-email-template.html", struct {
+	body, err := s.renderTemplate("account-created-email-template.html", struct {
 		SupportEmail string
 	}{SupportEmail: s.fromEmail})
 	if err != nil {
@@ -98,16 +103,21 @@ func (s *EmailService) send(toEmail, subject, htmlContent string) error {
 	return nil
 }
 
-func renderHTMLTemplate(path string, data any) (string, error) {
-	tmpl, err := template.ParseFS(templatesFS, path)
+func (s *EmailService) renderTemplate(name string, data any) (string, error) {
+	var out bytes.Buffer
+	if s.templates != nil {
+		if err := s.templates.ExecuteTemplate(&out, name, data); err == nil {
+			return out.String(), nil
+		}
+	}
+
+	// Fallback to direct parse if template not found in bundle
+	tmpl, err := template.ParseFS(templatesFS, filepath.Join("template", name))
 	if err != nil {
 		return "", err
 	}
-
-	var out bytes.Buffer
 	if err := tmpl.Execute(&out, data); err != nil {
 		return "", err
 	}
-
 	return out.String(), nil
 }
