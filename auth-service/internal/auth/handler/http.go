@@ -32,6 +32,23 @@ func NewHTTP(svc *service.Service, jwtSecret, jwtIssuer string) *HTTP {
 
 func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", h.handleHealth)
+
+	// Canonical RESTful routes
+	mux.HandleFunc("/api/v1/auth/register", h.handleRegister)
+	mux.HandleFunc("/api/v1/auth/register/verify", h.handleVerifyRegisterOTP)
+	mux.HandleFunc("/api/v1/auth/register/verify-otp", h.handleVerifyRegisterOTP)
+	mux.HandleFunc("/api/v1/auth/login", h.handleLogin)
+	mux.HandleFunc("/api/v1/auth/forgot-password", h.handleForgotPassword)
+	mux.HandleFunc("/api/v1/auth/forgot-password/verify", h.handleVerifyForgotPasswordOTP)
+	mux.HandleFunc("/api/v1/auth/forgot-password/verify-otp", h.handleVerifyForgotPasswordOTP)
+	mux.HandleFunc("/api/v1/auth/tokens", h.authMiddleware(h.handleTokens))
+	mux.HandleFunc("/api/v1/auth/tokens/", h.authMiddleware(h.handleTokenByID))
+
+	// Direct tokens resource aliases
+	mux.HandleFunc("/api/v1/tokens", h.authMiddleware(h.handleTokens))
+	mux.HandleFunc("/api/v1/tokens/", h.authMiddleware(h.handleTokenByID))
+
+	// Legacy aliases for backward compatibility
 	mux.HandleFunc("/api/v1/register", h.handleRegister)
 	mux.HandleFunc("/api/v1/register/verify-otp", h.handleVerifyRegisterOTP)
 	mux.HandleFunc("/api/v1/login", h.handleLogin)
@@ -246,6 +263,25 @@ func (h *HTTP) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{"tokens": tokens})
 }
 
+func (h *HTTP) handleTokens(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleListTokens(w, r)
+	case http.MethodPost:
+		h.handleCreateToken(w, r)
+	default:
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *HTTP) handleTokenByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	h.handleDeleteToken(w, r)
+}
+
 func (h *HTTP) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -256,18 +292,42 @@ func (h *HTTP) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	var req deleteTokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+
+	tokenID := readTokenID(r)
+	if tokenID == "" {
+		respondError(w, http.StatusBadRequest, "token_id is required")
 		return
 	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if err := h.svc.DeleteToken(ctx, p.UserID, req.TokenID); err != nil {
+	if err := h.svc.DeleteToken(ctx, p.UserID, tokenID); err != nil {
 		h.mapError(w, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"message": "token revoked"})
+}
+
+func readTokenID(r *http.Request) string {
+	path := r.URL.Path
+	for _, prefix := range []string{"/api/v1/auth/tokens/", "/api/v1/tokens/"} {
+		if strings.HasPrefix(path, prefix) {
+			id := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+			if id != "" {
+				return id
+			}
+		}
+	}
+	if q := strings.TrimSpace(r.URL.Query().Get("token_id")); q != "" {
+		return q
+	}
+	if r.Body != nil && r.ContentLength > 0 {
+		var req deleteTokenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			return strings.TrimSpace(req.TokenID)
+		}
+	}
+	return ""
 }
 
 func (h *HTTP) authMiddleware(next http.HandlerFunc) http.HandlerFunc {

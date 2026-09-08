@@ -71,10 +71,24 @@ go run main.go -migrate=up -target=auth
 go run main.go -seed -target=auth
 ```
 
-## Current Endpoints
+## Endpoints
 
+### Canonical RESTful Endpoints
+- `POST /api/v1/auth/register` - Initiate registration (sends OTP)
+- `POST /api/v1/auth/register/verify` - Verify OTP & create user
+- `POST /api/v1/auth/login` - Authenticate with email/password (returns JWT)
+- `POST /api/v1/auth/forgot-password` - Initiate password reset (sends OTP)
+- `POST /api/v1/auth/forgot-password/verify` - Verify OTP & update password
+- `GET /api/v1/auth/tokens` - List active tokens (requires bearer token)
+- `POST /api/v1/auth/tokens` - Create new API token (requires bearer token)
+- `DELETE /api/v1/auth/tokens/{id}` - Revoke token by ID (requires bearer token)
+
+### Legacy Aliases (Supported)
 - `POST /api/v1/register`
+- `POST /api/v1/register/verify-otp`
 - `POST /api/v1/login`
-- `POST /api/v1/create-token` (requires bearer token)
-- `GET /api/v1/list-tokens` (requires bearer token)
-- `DELETE /api/v1/delete-token` (requires bearer token)
+- `POST /api/v1/forgot-password`
+- `POST /api/v1/forgot-password/verify-otp`
+- `POST /api/v1/create-token`
+- `GET /api/v1/list-tokens`
+- `DELETE /api/v1/delete-token`

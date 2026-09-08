@@ -45,6 +45,15 @@ type shareLinkRequest struct {
 	ExpiresInSecond int    `json:"expires_in_seconds"`
 }
 
+type permissionRequest struct {
+	Permission string `json:"permission"`
+}
+
+type visibilityRequest struct {
+	Visibility string `json:"visibility"`
+	Reason     string `json:"reason"`
+}
+
 const maxUploadBytes = 20 << 20 // 20 MiB
 
 type windowCounter struct {
@@ -129,9 +138,20 @@ func (h *HTTP) allowRedis(ctx context.Context, key string, limit int, window tim
 
 func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", h.handleHealth)
+
+	// Canonical RESTful routes
+	mux.HandleFunc("/api/v1/objects", h.authMiddleware(h.handleV1ObjectsRoot))
+	mux.HandleFunc("/api/v1/objects/", h.authMiddleware(h.handleV1ObjectsPath))
+	mux.HandleFunc("/api/v1/shares", h.handleShares)
+	mux.HandleFunc("/api/v1/shares/", h.handleShares)
+	mux.HandleFunc("/api/v1/public/objects/", h.handlePublicDownload)
+	mux.HandleFunc("/api/v1/admin/objects/", h.authMiddleware(h.handleAdminObjects))
+
+	// Direct S3-style routes
 	mux.HandleFunc("/objects/", h.authMiddleware(h.handleObjects))
 	mux.HandleFunc("/admin/objects/", h.authMiddleware(h.handleAdminObjects))
 
+	// Legacy aliases for backward compatibility
 	mux.HandleFunc("/api/v1/upload-file", h.authMiddleware(h.handleUploadAlias))
 	mux.HandleFunc("/api/v1/download-file", h.authMiddleware(h.handleDownloadAlias))
 	mux.HandleFunc("/api/v1/delete-file", h.authMiddleware(h.handleDeleteAlias))
@@ -164,19 +184,13 @@ func (h *HTTP) handleObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.HasSuffix(key, "/hide") {
-		if r.Method != http.MethodPut {
+	if strings.HasSuffix(key, "/hide") || strings.HasSuffix(key, "/visibility") {
+		if r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodPost {
 			respondError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		key = strings.TrimSuffix(key, "/hide")
-		hideCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		if err := h.svc.Hide(hideCtx, p.UserID, key, p.UserID, p.Role, "owner hide"); err != nil {
-			h.mapError(w, err)
-			return
-		}
-		respondJSON(w, http.StatusOK, map[string]string{"message": "object hidden"})
+		cleanKey := strings.TrimSuffix(strings.TrimSuffix(key, "/visibility"), "/hide")
+		h.handleObjectVisibility(w, r, p.UserID, cleanKey)
 		return
 	}
 
@@ -185,6 +199,8 @@ func (h *HTTP) handleObjects(w http.ResponseWriter, r *http.Request) {
 		h.uploadObject(w, r, p.UserID, key)
 	case http.MethodGet:
 		h.downloadObject(w, r, p.UserID, key)
+	case http.MethodHead:
+		h.headObject(w, r, p.UserID, key)
 	case http.MethodDelete:
 		h.deleteObject(w, r, p.UserID, key)
 	default:
@@ -205,29 +221,48 @@ func (h *HTTP) handleAdminObjects(w http.ResponseWriter, r *http.Request) {
 
 	ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id"))
 	if ownerID == "" {
+		ownerID = readOwnerID(r)
+	}
+	if ownerID == "" {
 		respondError(w, http.StatusBadRequest, "owner_id is required")
 		return
 	}
 
-	key := strings.TrimPrefix(r.URL.Path, "/admin/objects/")
+	key := r.URL.Path
+	for _, prefix := range []string{"/api/v1/admin/objects/", "/admin/objects/"} {
+		if strings.HasPrefix(key, prefix) {
+			key = strings.TrimPrefix(key, prefix)
+			break
+		}
+	}
+	if key == "" {
+		key = readObjectKey(r)
+	}
 	if key == "" {
 		respondError(w, http.StatusBadRequest, "object key is required")
 		return
 	}
 
-	if strings.HasSuffix(key, "/hide") {
-		if r.Method != http.MethodPut {
+	if strings.HasSuffix(key, "/hide") || strings.HasSuffix(key, "/visibility") {
+		if r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodPost {
 			respondError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		key = strings.TrimSuffix(key, "/hide")
+		cleanKey := strings.TrimSuffix(strings.TrimSuffix(key, "/visibility"), "/hide")
+		reason := "admin hide"
+		if r.Body != nil && r.ContentLength > 0 {
+			var req visibilityRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Reason != "" {
+				reason = req.Reason
+			}
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		if err := h.svc.Hide(ctx, ownerID, key, p.UserID, p.Role, "admin hide"); err != nil {
+		if err := h.svc.Hide(ctx, ownerID, cleanKey, p.UserID, p.Role, reason); err != nil {
 			h.mapError(w, err)
 			return
 		}
-		respondJSON(w, http.StatusOK, map[string]string{"message": "object hidden"})
+		respondJSON(w, http.StatusOK, map[string]string{"message": "object hidden", "visibility": "hidden"})
 		return
 	}
 
@@ -236,6 +271,213 @@ func (h *HTTP) handleAdminObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.deleteObject(w, r, ownerID, key)
+}
+
+func (h *HTTP) handleV1ObjectsRoot(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleGetUserFiles(w, r)
+	case http.MethodPost:
+		h.handleUploadAlias(w, r)
+	default:
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *HTTP) handleV1ObjectsPath(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	sub := strings.TrimPrefix(r.URL.Path, "/api/v1/objects/")
+	if sub == "" {
+		h.handleV1ObjectsRoot(w, r)
+		return
+	}
+
+	if strings.HasSuffix(sub, "/permission") {
+		key := strings.TrimSuffix(sub, "/permission")
+		h.handleObjectPermission(w, r, p.UserID, key)
+		return
+	}
+
+	if strings.HasSuffix(sub, "/visibility") || strings.HasSuffix(sub, "/hide") {
+		cleanKey := strings.TrimSuffix(strings.TrimSuffix(sub, "/visibility"), "/hide")
+		h.handleObjectVisibility(w, r, p.UserID, cleanKey)
+		return
+	}
+
+	if strings.HasSuffix(sub, "/shares") {
+		key := strings.TrimSuffix(sub, "/shares")
+		h.handleCreateShareLinkForKey(w, r, p.UserID, key)
+		return
+	}
+
+	if strings.HasSuffix(sub, "/exists") {
+		key := strings.TrimSuffix(sub, "/exists")
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		exists, err := h.svc.FileExists(ctx, p.UserID, key)
+		if err != nil {
+			h.mapError(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"object_key": key, "exists": exists})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		h.uploadObject(w, r, p.UserID, sub)
+	case http.MethodGet:
+		h.downloadObject(w, r, p.UserID, sub)
+	case http.MethodHead:
+		h.headObject(w, r, p.UserID, sub)
+	case http.MethodDelete:
+		h.deleteObject(w, r, p.UserID, sub)
+	default:
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *HTTP) headObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
+	if strings.TrimSpace(key) == "" {
+		respondError(w, http.StatusBadRequest, "object key is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	rec, stream, err := h.svc.Download(ctx, ownerID, key)
+	if err != nil {
+		h.mapError(w, err)
+		return
+	}
+	_ = stream.Close()
+
+	if rec.ContentType != "" {
+		w.Header().Set("Content-Type", rec.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if rec.ETag != "" {
+		w.Header().Set("ETag", rec.ETag)
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(rec.SizeBytes, 10))
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *HTTP) handleObjectPermission(w http.ResponseWriter, r *http.Request, userID, key string) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !h.allowByUserAndIP(r, userID, "permission", 60, time.Minute) {
+		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for permission updates")
+		return
+	}
+
+	perm := strings.TrimSpace(r.URL.Query().Get("permission"))
+	if perm == "" && r.Body != nil && r.ContentLength > 0 {
+		var req permissionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			perm = strings.TrimSpace(req.Permission)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	switch perm {
+	case "public-read":
+		if err := h.svc.MakePublicRead(ctx, userID, key); err != nil {
+			h.mapError(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]string{"message": "permission set to public-read", "permission": "public-read"})
+	case "private-read":
+		if err := h.svc.MakePrivateRead(ctx, userID, key); err != nil {
+			h.mapError(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]string{"message": "permission set to private-read", "permission": "private-read"})
+	default:
+		respondError(w, http.StatusBadRequest, "invalid permission: must be 'public-read' or 'private-read'")
+	}
+}
+
+func (h *HTTP) handleObjectVisibility(w http.ResponseWriter, r *http.Request, userID, key string) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	reason := "owner hide"
+	if r.Body != nil && r.ContentLength > 0 {
+		var req visibilityRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Reason != "" {
+			reason = req.Reason
+		}
+	}
+
+	p, ok := principalFromContext(r.Context())
+	actorRole := "user"
+	if ok && p.Role != "" {
+		actorRole = p.Role
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := h.svc.Hide(ctx, userID, key, userID, actorRole, reason); err != nil {
+		h.mapError(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"message": "object hidden", "visibility": "hidden"})
+}
+
+func (h *HTTP) handleCreateShareLinkForKey(w http.ResponseWriter, r *http.Request, userID, key string) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ttl := 15 * time.Minute
+	if r.Body != nil && r.ContentLength > 0 {
+		var req shareLinkRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.ExpiresInSecond > 0 {
+			ttl = time.Duration(req.ExpiresInSecond) * time.Second
+		}
+	} else if q := r.URL.Query().Get("expires_in_seconds"); q != "" {
+		if s, err := strconv.Atoi(q); err == nil && s > 0 {
+			ttl = time.Duration(s) * time.Second
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	token, expiresAt, err := h.svc.CreateTemporaryShareLink(ctx, userID, key, ttl)
+	if err != nil {
+		h.mapError(w, err)
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"token":      token,
+		"expires_at": expiresAt,
+		"url":        "/api/v1/shares/" + token,
+	})
+}
+
+func (h *HTTP) handleShares(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.authMiddleware(h.handleCreateShareLink)(w, r)
+	case http.MethodGet:
+		h.handleDownloadByShareLink(w, r)
+	default:
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (h *HTTP) handleUploadAlias(w http.ResponseWriter, r *http.Request) {
@@ -502,10 +744,26 @@ func (h *HTTP) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id"))
-	key := readObjectKey(r)
 	if ownerID == "" {
 		ownerID = readOwnerID(r)
 	}
+
+	key := strings.TrimSpace(r.URL.Query().Get("object_key"))
+	if key == "" {
+		key = strings.TrimSpace(r.URL.Query().Get("key"))
+	}
+	if key == "" {
+		for _, prefix := range []string{"/api/v1/public/objects/", "/public/objects/"} {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				key = strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+				break
+			}
+		}
+	}
+	if key == "" {
+		key = readObjectKey(r)
+	}
+
 	if ownerID == "" || key == "" {
 		respondError(w, http.StatusBadRequest, "owner_id and object_key are required")
 		return
@@ -565,7 +823,7 @@ func (h *HTTP) handleCreateShareLink(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, map[string]any{
 		"token":      token,
 		"expires_at": expiresAt,
-		"url":        "/api/v1/share/download?token=" + token,
+		"url":        "/api/v1/shares/" + token,
 	})
 }
 
@@ -575,6 +833,14 @@ func (h *HTTP) handleDownloadByShareLink(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		for _, prefix := range []string{"/api/v1/shares/", "/shares/"} {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				token = strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+				break
+			}
+		}
+	}
 	if token == "" {
 		respondError(w, http.StatusBadRequest, "token is required")
 		return
@@ -719,8 +985,10 @@ func isPrivileged(p principal) bool {
 }
 
 func readObjectKey(r *http.Request) string {
-	key := strings.TrimSpace(r.URL.Query().Get("object_key"))
-	if key != "" {
+	if key := strings.TrimSpace(r.URL.Query().Get("object_key")); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(r.URL.Query().Get("key")); key != "" {
 		return key
 	}
 	if headerKey := strings.TrimSpace(r.Header.Get("X-Object-Key")); headerKey != "" {
