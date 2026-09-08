@@ -24,6 +24,10 @@ type Server struct {
 var objectPathPrefixes = []string{
 	"/objects/",
 	"/admin/objects/",
+	"/api/v1/objects",
+	"/api/v1/shares",
+	"/api/v1/public/",
+	"/api/v1/admin/objects",
 }
 
 var objectExactPaths = map[string]struct{}{
@@ -42,6 +46,74 @@ var objectExactPaths = map[string]struct{}{
 	"/api/v1/public/download-file": {},
 }
 
+var authPathPrefixes = []string{
+	"/api/v1/auth/",
+	"/api/v1/tokens/",
+}
+
+var authExactRoutes = map[string]struct{}{
+	"/api/v1/register":                   {},
+	"/api/v1/register/verify-otp":        {},
+	"/api/v1/login":                      {},
+	"/api/v1/forgot-password":            {},
+	"/api/v1/forgot-password/verify-otp": {},
+	"/api/v1/owner-only":                 {},
+	"/api/v1/create-token":               {},
+	"/api/v1/list-tokens":                {},
+	"/api/v1/delete-token":               {},
+	"/api/v1/tokens":                     {},
+}
+
+var publicExactRoutes = map[string]struct{}{
+	"/healthz":                                {},
+	"/api/v1/auth/register":                   {},
+	"/api/v1/auth/register/verify":            {},
+	"/api/v1/auth/register/verify-otp":        {},
+	"/api/v1/auth/login":                      {},
+	"/api/v1/auth/forgot-password":            {},
+	"/api/v1/auth/forgot-password/verify":     {},
+	"/api/v1/auth/forgot-password/verify-otp": {},
+	"/api/v1/register":                        {},
+	"/api/v1/register/verify-otp":             {},
+	"/api/v1/login":                           {},
+	"/api/v1/forgot-password":                 {},
+	"/api/v1/forgot-password/verify-otp":      {},
+	"/api/v1/share/download":                  {},
+	"/api/v1/public/download-file":            {},
+}
+
+func isPublicRoute(path, method string) bool {
+	if _, ok := publicExactRoutes[path]; ok {
+		return true
+	}
+	if method == http.MethodGet {
+		if strings.HasPrefix(path, "/api/v1/shares/") || strings.HasPrefix(path, "/api/v1/public/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isAuthPath(path string) bool {
+	for _, prefix := range authPathPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	_, ok := authExactRoutes[path]
+	return ok
+}
+
+func isObjectPath(path string) bool {
+	for _, prefix := range objectPathPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	_, exists := objectExactPaths[path]
+	return exists
+}
+
 func New(cfg config.Config) *http.Server {
 	authURL, err := url.Parse(cfg.AuthServiceURL)
 	if err != nil {
@@ -55,36 +127,13 @@ func New(cfg config.Config) *http.Server {
 	authProxy := httputil.NewSingleHostReverseProxy(authURL)
 	objectProxy := httputil.NewSingleHostReverseProxy(objectURL)
 
-	authRoutes := map[string]struct{}{
-		"/api/v1/register":                   {},
-		"/api/v1/register/verify-otp":        {},
-		"/api/v1/login":                      {},
-		"/api/v1/forgot-password":            {},
-		"/api/v1/forgot-password/verify-otp": {},
-		"/api/v1/owner-only":                 {},
-		"/api/v1/create-token":               {},
-		"/api/v1/list-tokens":                {},
-		"/api/v1/delete-token":               {},
-	}
-
-	publicRoutes := map[string]struct{}{
-		"/api/v1/register":                   {},
-		"/api/v1/register/verify-otp":        {},
-		"/api/v1/login":                      {},
-		"/api/v1/forgot-password":            {},
-		"/api/v1/forgot-password/verify-otp": {},
-		"/api/v1/share/download":             {},
-		"/api/v1/public/download-file":       {},
-		"/healthz":                           {},
-	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := publicRoutes[r.URL.Path]; !ok {
+		if !isPublicRoute(r.URL.Path, r.Method) {
 			claims, err := validateBearerJWT(r.Header.Get("Authorization"), cfg.JWTSecret, cfg.JWTIssuer)
 			if err != nil {
 				respondError(w, http.StatusUnauthorized, "unauthorized")
@@ -101,7 +150,7 @@ func New(cfg config.Config) *http.Server {
 			}
 		}
 
-		if _, ok := authRoutes[r.URL.Path]; ok {
+		if isAuthPath(r.URL.Path) {
 			authProxy.ServeHTTP(w, r)
 			return
 		}
@@ -123,20 +172,6 @@ func New(cfg config.Config) *http.Server {
 		IdleTimeout:  120 * time.Second,
 	}
 	return s.http
-}
-
-func isObjectPath(path string) bool {
-	for _, prefix := range objectPathPrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-
-	if _, exists := objectExactPaths[path]; exists {
-		return true
-	}
-
-	return false
 }
 
 type TokenClaims struct {
