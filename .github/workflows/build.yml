@@ -1,0 +1,97 @@
+name: Build Check
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  detect-and-build:
+    name: Build Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Detect Changed Services
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            api_gateway:
+              - 'api-gateway/**'
+            auth_service:
+              - 'auth-service/**'
+            object_api:
+              - 'object-api/**'
+            storage_node:
+              - 'storage-node/**'
+            migrations:
+              - 'migrations/**'
+            shared:
+              - 'go.work*'
+              - '.github/workflows/**'
+
+      - name: Check if Build Required
+        id: check
+        run: |
+          if [ "${{ steps.changes.outputs.api_gateway }}" = "true" ] || \
+             [ "${{ steps.changes.outputs.auth_service }}" = "true" ] || \
+             [ "${{ steps.changes.outputs.object_api }}" = "true" ] || \
+             [ "${{ steps.changes.outputs.storage_node }}" = "true" ] || \
+             [ "${{ steps.changes.outputs.migrations }}" = "true" ] || \
+             [ "${{ steps.changes.outputs.shared }}" = "true" ]; then
+            echo "build_required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_required=false" >> "$GITHUB_OUTPUT"
+            echo "No service changes detected (e.g. only documentation updated). Skipping service builds."
+          fi
+
+      - name: Set up Go
+        if: steps.check.outputs.build_required == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.work'
+          cache: true
+
+      - name: Sync Workspace
+        if: steps.check.outputs.build_required == 'true'
+        run: go work sync
+
+      - name: Build api-gateway
+        if: steps.changes.outputs.api_gateway == 'true' || steps.changes.outputs.shared == 'true'
+        run: |
+          echo "==> Building api-gateway..."
+          go build -v ./api-gateway/...
+          go build -v -o /dev/null ./api-gateway/cmd
+
+      - name: Build auth-service
+        if: steps.changes.outputs.auth_service == 'true' || steps.changes.outputs.shared == 'true'
+        run: |
+          echo "==> Building auth-service..."
+          go build -v ./auth-service/...
+          go build -v -o /dev/null ./auth-service/cmd
+
+      - name: Build object-api
+        if: steps.changes.outputs.object_api == 'true' || steps.changes.outputs.shared == 'true'
+        run: |
+          echo "==> Building object-api..."
+          go build -v ./object-api/...
+          go build -v -o /dev/null ./object-api/cmd
+
+      - name: Build storage-node
+        if: steps.changes.outputs.storage_node == 'true' || steps.changes.outputs.shared == 'true'
+        run: |
+          echo "==> Building storage-node..."
+          go build -v ./storage-node/...
+          go build -v -o /dev/null ./storage-node/cmd
+
+      - name: Build migrations
+        if: steps.changes.outputs.migrations == 'true' || steps.changes.outputs.shared == 'true'
+        run: |
+          echo "==> Building migrations..."
+          go build -v ./migrations/...
+          go build -v -o /dev/null ./migrations
