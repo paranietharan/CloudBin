@@ -250,7 +250,7 @@ func (h *HTTP) handleAdminObjects(w http.ResponseWriter, r *http.Request) {
 		}
 		cleanKey := strings.TrimSuffix(strings.TrimSuffix(key, "/visibility"), "/hide")
 		reason := "admin hide"
-		if r.Body != nil && r.ContentLength != 0 {
+		if r.Body != nil && r.ContentLength > 0 {
 			var req visibilityRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Reason != "" {
 				reason = req.Reason

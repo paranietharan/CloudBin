@@ -321,7 +321,7 @@ func readTokenID(r *http.Request) string {
 	if q := strings.TrimSpace(r.URL.Query().Get("token_id")); q != "" {
 		return q
 	}
-	if r.Body != nil && r.ContentLength != 0 {
+	if r.Body != nil && r.ContentLength > 0 {
 		var req deleteTokenRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			return strings.TrimSpace(req.TokenID)
