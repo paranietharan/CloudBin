@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.27-alpine AS builder
+FROM golang:1.27.3-alpine3.24 AS builder
 WORKDIR /src
 
 # Cache module downloads first (go.sum may not exist yet in this module).
@@ -10,7 +10,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/storage-node ./cmd
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN adduser -D -H -u 10001 appuser
 WORKDIR /app
 

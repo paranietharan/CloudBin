@@ -1,0 +1,18 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Test every Go module
+        run: |
+          for module in api-gateway auth-service migrations object-api storage-node; do
+            (cd "$module" && GOWORK=off go test -race ./...)
+          done

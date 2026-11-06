@@ -94,3 +94,8 @@ docker compose down --volumes --remove-orphans
 ### Admin Routes
 - `DELETE /api/v1/admin/objects/{key}?owner_id={id}` — Delete any user's object (requires `admin` role)
 - `PUT /api/v1/admin/objects/{key}/visibility?owner_id={id}` — Hide/unhide an object (requires `admin` role)
+
+
+## Automated maintenance checks
+
+CI runs `go test -race ./...` in all five Go modules with Go 1.27.3. Containers use Alpine 3.24 and direct Go libraries have been refreshed within their existing module major paths. These checks cover the current unit suite; multi-node failure/rollback scenarios need a separate integration environment. PostgreSQL data volumes and major versions are unchanged.
