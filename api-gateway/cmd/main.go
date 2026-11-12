@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,12 +16,8 @@ import (
 )
 
 func main() {
-	root, err := projectRoot()
-	if err != nil {
-		log.Fatalf("failed to read working directory: %v", err)
-	}
-	loadDotEnv(filepath.Join(root, "api-gateway", ".env"))
-	loadDotEnv(filepath.Join(root, ".env"))
+	loadDotEnv(".env")
+	loadDotEnv("../.env")
 
 	cfg := config.Load()
 	srv := server.New(cfg)
@@ -48,28 +43,6 @@ func main() {
 			log.Printf("gateway shutdown error: %v", err)
 		}
 	}
-}
-
-func projectRoot() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	dir := cwd
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
-			return dir, nil
-		}
-		if _, err := os.Stat(filepath.Join(dir, ".env")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return cwd, nil
 }
 
 func loadDotEnv(path string) {

@@ -1,9 +1,0 @@
-go 1.27.0
-
-use (
-	./api-gateway
-	./auth-service
-	./migrations
-	./object-api
-	./storage-node
-)
