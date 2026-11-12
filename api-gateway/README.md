@@ -35,12 +35,6 @@ JWT_SECRET=change-me
 JWT_ISSUER=cloudbin-auth
 ```
 
-## Run Locally
-
-```bash
-cp .env.example .env
-go run ./cmd
-```
 
 ## Health Check
 
