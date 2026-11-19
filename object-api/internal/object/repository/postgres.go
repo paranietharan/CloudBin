@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var ErrConflict = errors.New("object changed during upload")
+
 var ErrNotFound = errors.New("object not found")
 
 type Postgres struct {
@@ -22,46 +24,94 @@ func NewPostgres(db *pgxpool.Pool) *Postgres {
 	return &Postgres{db: db}
 }
 
-func (p *Postgres) UpsertObject(ctx context.Context, ownerID, objectKey, contentType string, sizeBytes int64, etag, primaryNode, replicaNode string) (string, error) {
-	id := uuid.New()
-	var objectID uuid.UUID
-	err := p.db.QueryRow(ctx, `
-		WITH upserted AS (
-			INSERT INTO objects (id, owner_user_id, object_key, content_type, size_bytes, etag, visibility, hidden_by, hidden_at, deleted_by, deleted_at, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, 'visible', NULL, NULL, NULL, NULL, NOW(), NOW())
-			ON CONFLICT (owner_user_id, object_key)
-			DO UPDATE SET
-				content_type = EXCLUDED.content_type,
-				size_bytes = EXCLUDED.size_bytes,
-				etag = EXCLUDED.etag,
-				visibility = 'visible',
-				hidden_by = NULL,
-				hidden_at = NULL,
-				deleted_by = NULL,
-				deleted_at = NULL,
-				updated_at = NOW()
-			RETURNING id
-		)
-		INSERT INTO object_placements (object_id, primary_node_id, replica_node_id, placement_version, created_at, updated_at)
-		SELECT id, $7, $8, 1, NOW(), NOW() FROM upserted
-		ON CONFLICT (object_id)
-		DO UPDATE SET
-			primary_node_id = EXCLUDED.primary_node_id,
-			replica_node_id = EXCLUDED.replica_node_id,
-			updated_at = NOW()
-		RETURNING object_id
-	`, id, ownerID, objectKey, contentType, sizeBytes, etag, primaryNode, replicaNode).Scan(&objectID)
-	if err != nil {
-		return "", err
-	}
-	return objectID.String(), nil
+// Stage records every destination before any bytes are written. If a writer
+// crashes, the collector can safely reclaim the attempt after its grace period.
+func (p *Postgres) Stage(ctx context.Context, key string, nodes []string) error {
+	_, err := p.db.Exec(ctx, "INSERT INTO storage_cleanup(storage_key,nodes) VALUES ($1,$2)", key, nodes)
+	return err
+}
+
+func (p *Postgres) CommitVersion(ctx context.Context, rec model.ObjectRecord, previous *model.ObjectRecord) error {
+	return pgx.BeginFunc(ctx, p.db, func(tx pgx.Tx) error {
+		// Claiming this row prevents a publisher racing an expired staging entry.
+		tag, err := tx.Exec(ctx, "DELETE FROM storage_cleanup WHERE storage_key=$1 AND eligible_at>now()", rec.StorageKey)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrConflict
+		}
+		var id string
+		if previous == nil {
+			err = tx.QueryRow(ctx, `
+                INSERT INTO objects(id,owner_user_id,object_key,content_type,size_bytes,etag,storage_key)
+                VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(owner_user_id,object_key) DO NOTHING RETURNING id`,
+				uuid.New(), rec.OwnerUserID, rec.ObjectKey, rec.ContentType, rec.SizeBytes, rec.ETag, rec.StorageKey).Scan(&id)
+		} else {
+			err = tx.QueryRow(ctx, `
+                UPDATE objects SET content_type=$2,size_bytes=$3,etag=$4,storage_key=$5,
+                    visibility='visible',hidden_by=NULL,hidden_at=NULL,updated_at=now()
+                WHERE id=$1 AND COALESCE(storage_key,'')=$6 RETURNING id`,
+				previous.ID, rec.ContentType, rec.SizeBytes, rec.ETag, rec.StorageKey, previous.StorageKey).Scan(&id)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrConflict
+		}
+		if err != nil {
+			return err
+		}
+		if previous != nil {
+			if err := queueOldVersion(ctx, tx, *previous); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO object_placements(object_id,primary_node_id,replica_node_id,nodes)
+            VALUES($1,$2,$3,$4) ON CONFLICT(object_id) DO UPDATE SET
+            primary_node_id=EXCLUDED.primary_node_id,replica_node_id=EXCLUDED.replica_node_id,
+            nodes=EXCLUDED.nodes, updated_at=now(), placement_version=object_placements.placement_version+1`,
+			id, rec.PrimaryNode, rec.ReplicaNode, rec.Nodes)
+		return err
+	})
+}
+
+func queueOldVersion(ctx context.Context, tx pgx.Tx, rec model.ObjectRecord) error {
+	_, err := tx.Exec(ctx, `INSERT INTO storage_cleanup(storage_key,nodes) VALUES ($1,$2)
+        ON CONFLICT(storage_key) DO NOTHING`, rec.BlobKey(), rec.Nodes)
+	return err
+}
+
+// CollectOne locks one old version until its bounded, idempotent deletes finish.
+func (p *Postgres) CollectOne(ctx context.Context, remove func(context.Context, string, string) error) (bool, error) {
+	var found bool
+	err := pgx.BeginFunc(ctx, p.db, func(tx pgx.Tx) error {
+		var key string
+		var nodes []string
+		err := tx.QueryRow(ctx, `SELECT storage_key,nodes FROM storage_cleanup WHERE eligible_at<=now()
+           ORDER BY eligible_at LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&key, &nodes)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		for _, node := range nodes {
+			if err := remove(ctx, node, key); err != nil {
+				_, retryErr := tx.Exec(ctx, "UPDATE storage_cleanup SET eligible_at=now()+interval '5 minutes' WHERE storage_key=$1", key)
+				return retryErr
+			}
+		}
+		_, err = tx.Exec(ctx, "DELETE FROM storage_cleanup WHERE storage_key=$1", key)
+		return err
+	})
+	return found, err
 }
 
 func (p *Postgres) FindByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, error) {
 	var rec model.ObjectRecord
 	err := p.db.QueryRow(ctx, `
 		SELECT o.id, o.owner_user_id, o.object_key, COALESCE(o.content_type, ''), o.size_bytes, COALESCE(o.etag, ''),
-		       o.permission, o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at
+		       o.permission, o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at, COALESCE(o.storage_key,''), COALESCE(op.nodes,ARRAY[op.primary_node_id,op.replica_node_id])
 		FROM objects o
 		JOIN object_placements op ON op.object_id = o.id
 		WHERE o.owner_user_id = $1 AND o.object_key = $2 AND o.deleted_at IS NULL
@@ -77,7 +127,7 @@ func (p *Postgres) FindByOwnerAndKey(ctx context.Context, ownerID, objectKey str
 		&rec.PrimaryNode,
 		&rec.ReplicaNode,
 		&rec.CreatedAt,
-		&rec.UpdatedAt,
+		&rec.UpdatedAt, &rec.StorageKey, &rec.Nodes,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ObjectRecord{}, ErrNotFound
@@ -110,15 +160,20 @@ func (p *Postgres) HideByOwnerAndKey(ctx context.Context, ownerID, objectKey, ac
 	return true, nil
 }
 
-func (p *Postgres) DeleteByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (bool, error) {
-	tag, err := p.db.Exec(ctx, `
-		DELETE FROM objects
-		WHERE owner_user_id = $1 AND object_key = $2
-	`, ownerID, objectKey)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
+func (p *Postgres) DeleteVersion(ctx context.Context, rec model.ObjectRecord) (bool, error) {
+	var deleted bool
+	err := pgx.BeginFunc(ctx, p.db, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, "DELETE FROM objects WHERE id=$1 AND COALESCE(storage_key,'')=$2", rec.ID, rec.StorageKey)
+		if err != nil {
+			return err
+		}
+		deleted = tag.RowsAffected() == 1
+		if deleted {
+			return queueOldVersion(ctx, tx, rec)
+		}
+		return nil
+	})
+	return deleted, err
 }
 
 func (p *Postgres) ListByOwner(ctx context.Context, ownerID string) ([]model.ObjectRecord, error) {

@@ -99,3 +99,7 @@ docker compose down --volumes --remove-orphans
 ## Automated maintenance checks
 
 CI runs `go test -race ./...` in all five Go modules with Go 1.27.3. Containers use Alpine 3.24 and direct Go libraries have been refreshed within their existing module major paths. These checks cover the current unit suite; multi-node failure/rollback scenarios need a separate integration environment. PostgreSQL data volumes and major versions are unchanged.
+
+### Overwrite recovery
+
+Apply object migration 000002 before deploying the updated object API. Each upload stages a unique blob path and publishes its metadata after all replicas accept the bytes. Concurrent writes can return HTTP 409 and may be retried. Reads of existing objects use their legacy paths. The object API retries deletion of staged or superseded blobs after a one-hour grace period. Quiesce old object-API writers during migration.

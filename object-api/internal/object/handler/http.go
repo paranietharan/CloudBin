@@ -1037,6 +1037,8 @@ func (h *HTTP) mapError(w http.ResponseWriter, err error) {
 	switch {
 	case err == nil:
 		return
+	case errors.Is(err, service.ErrConflict):
+		respondError(w, http.StatusConflict, "object changed during upload; retry")
 	case errors.Is(err, service.ErrInvalidKey):
 		respondError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrForbidden):
