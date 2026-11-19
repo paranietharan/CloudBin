@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -16,9 +17,10 @@ import (
 )
 
 type Server struct {
-	http *http.Server
-	db   *pgxpool.Pool
-	rdb  *redis.Client
+	stopCleanup context.CancelFunc
+	http        *http.Server
+	db          *pgxpool.Pool
+	rdb         *redis.Client
 }
 
 func (s *Server) ListenAndServe() error {
@@ -26,6 +28,7 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.stopCleanup()
 	err := s.http.Shutdown(ctx)
 	if s.db != nil {
 		s.db.Close()
@@ -77,7 +80,29 @@ func New(cfg config.Config) (*Server, error) {
 	mux := http.NewServeMux()
 	httpHandler.RegisterRoutes(mux)
 
-	return &Server{
+	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cleanupCtx.Done():
+				return
+			case <-ticker.C:
+			}
+			for i := 0; i < 64; i++ {
+				found, err := repo.CollectOne(cleanupCtx, objectService.DeleteReplica)
+				if err != nil {
+					log.Printf("object cleanup: %v", err)
+					break
+				}
+				if !found {
+					break
+				}
+			}
+		}
+	}()
+	return &Server{stopCleanup: stopCleanup,
 		http: &http.Server{
 			Addr:         ":" + cfg.Port,
 			Handler:      mux,

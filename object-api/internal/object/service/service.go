@@ -26,17 +26,19 @@ import (
 var (
 	ErrNotFound             = errors.New("object not found")
 	ErrForbidden            = errors.New("forbidden")
+	ErrConflict             = repository.ErrConflict
 	ErrInvalidKey           = errors.New("object key is required")
 	ErrInvalidNodeConfig    = errors.New("invalid storage node configuration")
 	ErrReplicationWriteFail = errors.New("failed to replicate to storage nodes")
 )
 
 type Repository interface {
-	UpsertObject(ctx context.Context, ownerID, objectKey, contentType string, sizeBytes int64, etag, primaryNode, replicaNode string) (string, error)
+	Stage(context.Context, string, []string) error
+	CommitVersion(context.Context, model.ObjectRecord, *model.ObjectRecord) error
 	FindByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, error)
 	SetPermissionByOwnerAndKey(ctx context.Context, ownerID, objectKey, permission string) (bool, error)
 	HideByOwnerAndKey(ctx context.Context, ownerID, objectKey, actorID, actorRole, reason string) (bool, error)
-	DeleteByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (bool, error)
+	DeleteVersion(ctx context.Context, rec model.ObjectRecord) (bool, error)
 	ListByOwner(ctx context.Context, ownerID string) ([]model.ObjectRecord, error)
 	ListByOwnerWithFilters(ctx context.Context, ownerID, permission, visibility, keyQuery string, limit, offset int) ([]model.ObjectRecord, error)
 	CountByOwnerWithFilters(ctx context.Context, ownerID, permission, visibility, keyQuery string) (int, error)
@@ -158,7 +160,17 @@ func (s *Service) Upload(ctx context.Context, ownerID, objectKey, contentType st
 	}
 	primary := targetNodes[0]
 	replica := targetNodes[1]
-	storageKey := storagePath(ownerID, objectKey)
+	var previous *model.ObjectRecord
+	current, err := s.repo.FindByOwnerAndKey(ctx, ownerID, objectKey)
+	if err == nil {
+		previous = &current
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		return err
+	}
+	storageKey := "_versions/" + uuid.NewString()
+	if err := s.repo.Stage(ctx, storageKey, targetNodes); err != nil {
+		return err
+	}
 
 	var wg sync.WaitGroup
 	results := make(chan error, len(targetNodes))
@@ -180,16 +192,15 @@ func (s *Service) Upload(ctx context.Context, ownerID, objectKey, contentType st
 		}
 	}
 	if fails > 0 {
-		for _, node := range targetNodes {
-			_ = s.deleteFromNode(context.Background(), node, storageKey)
-		}
 		return ErrReplicationWriteFail
 	}
 
 	sum := sha256.Sum256(data)
 	etag := hex.EncodeToString(sum[:])
-	_, err := s.repo.UpsertObject(ctx, ownerID, objectKey, contentType, int64(len(data)), etag, primary, replica)
-	return err
+	return s.repo.CommitVersion(ctx, model.ObjectRecord{
+		OwnerUserID: ownerID, ObjectKey: objectKey, StorageKey: storageKey, ContentType: contentType,
+		SizeBytes: int64(len(data)), ETag: etag, PrimaryNode: primary, ReplicaNode: replica, Nodes: targetNodes,
+	}, previous)
 }
 
 func (s *Service) Download(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, io.ReadCloser, error) {
@@ -201,7 +212,7 @@ func (s *Service) Download(ctx context.Context, ownerID, objectKey string) (mode
 		return model.ObjectRecord{}, nil, err
 	}
 
-	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
+	storageKey := rec.BlobKey()
 	stream, err := s.getFromNodeStream(ctx, rec.PrimaryNode, storageKey)
 	if err != nil && rec.ReplicaNode != "" {
 		stream, err = s.getFromNodeStream(ctx, rec.ReplicaNode, storageKey)
@@ -221,15 +232,7 @@ func (s *Service) Delete(ctx context.Context, ownerID, objectKey string) error {
 		return err
 	}
 
-	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
-	if rec.PrimaryNode != "" {
-		_ = s.deleteFromNode(ctx, rec.PrimaryNode, storageKey)
-	}
-	if rec.ReplicaNode != "" {
-		_ = s.deleteFromNode(ctx, rec.ReplicaNode, storageKey)
-	}
-
-	ok, err := s.repo.DeleteByOwnerAndKey(ctx, ownerID, objectKey)
+	ok, err := s.repo.DeleteVersion(ctx, rec)
 	if err != nil {
 		return err
 	}
@@ -338,7 +341,7 @@ func (s *Service) DownloadPublic(ctx context.Context, ownerID, objectKey string)
 		return model.ObjectRecord{}, nil, ErrForbidden
 	}
 
-	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
+	storageKey := rec.BlobKey()
 	stream, err := s.getFromNodeStream(ctx, rec.PrimaryNode, storageKey)
 	if err != nil && rec.ReplicaNode != "" {
 		stream, err = s.getFromNodeStream(ctx, rec.ReplicaNode, storageKey)
@@ -425,7 +428,7 @@ func (s *Service) DownloadByShareToken(ctx context.Context, token string) (model
 		return model.ObjectRecord{}, nil, ErrForbidden
 	}
 
-	storageKey := storagePath(rec.OwnerUserID, rec.ObjectKey)
+	storageKey := rec.BlobKey()
 	stream, err := s.getFromNodeStream(ctx, rec.PrimaryNode, storageKey)
 	if err != nil && rec.ReplicaNode != "" {
 		stream, err = s.getFromNodeStream(ctx, rec.ReplicaNode, storageKey)
@@ -483,7 +486,7 @@ func (s *Service) getFromNodeStream(ctx context.Context, node, objectKey string)
 	return res.Body, nil
 }
 
-func (s *Service) deleteFromNode(ctx context.Context, node, objectKey string) error {
+func (s *Service) DeleteReplica(ctx context.Context, node, objectKey string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, fmt.Sprintf("%s/objects/%s", strings.TrimRight(node, "/"), objectKey), nil)
 	if err != nil {
 		return err

@@ -15,8 +15,9 @@ type mockRepo struct {
 	lastPermission   string
 }
 
-func (m *mockRepo) UpsertObject(ctx context.Context, ownerID, objectKey, contentType string, sizeBytes int64, etag, primaryNode, replicaNode string) (string, error) {
-	return "", nil
+func (m *mockRepo) Stage(context.Context, string, []string) error { return nil }
+func (m *mockRepo) CommitVersion(context.Context, model.ObjectRecord, *model.ObjectRecord) error {
+	return nil
 }
 
 func (m *mockRepo) FindByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (model.ObjectRecord, error) {
@@ -32,7 +33,7 @@ func (m *mockRepo) HideByOwnerAndKey(ctx context.Context, ownerID, objectKey, ac
 	return false, nil
 }
 
-func (m *mockRepo) DeleteByOwnerAndKey(ctx context.Context, ownerID, objectKey string) (bool, error) {
+func (m *mockRepo) DeleteVersion(ctx context.Context, rec model.ObjectRecord) (bool, error) {
 	return false, nil
 }
 

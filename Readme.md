@@ -84,7 +84,7 @@ docker compose down --volumes --remove-orphans
 - `GET /api/v1/objects/{key}` — Download object bytes
 - `HEAD /api/v1/objects/{key}` — Fetch object headers (`Content-Type`, `ETag`, `Content-Length`)
 - `GET /api/v1/objects/{key}/exists` — Check if an object exists
-- `DELETE /api/v1/objects/{key}` — Delete an object from primary and replica nodes
+- `DELETE /api/v1/objects/{key}` — Remove the published object and queue its replicas for cleanup
 - `PUT /api/v1/objects/{key}/permission` — Set access (`public-read` or `private-read`)
 - `PUT /api/v1/objects/{key}/visibility` — Update object visibility
 - `POST /api/v1/objects/{key}/shares` — Create an expiring download share link stored in Redis
@@ -98,4 +98,8 @@ docker compose down --volumes --remove-orphans
 
 ## Automated maintenance checks
 
-CI runs `go test -race ./...` in all five Go modules with Go 1.27.3. Containers use Alpine 3.24 and direct Go libraries have been refreshed within their existing module major paths. These checks cover the current unit suite; multi-node failure/rollback scenarios need a separate integration environment. PostgreSQL data volumes and major versions are unchanged.
+CI runs `go test -race ./...` in all five Go modules. Service tests simulate replica and metadata-write failures and check the original bytes and ETag. A PostgreSQL test checks stale writers and cleanup registration after migrations. [Passing module and overwrite checks](https://github.com/paranietharan/CloudBin/actions/runs/44537147386)
+
+### Overwrite recovery
+
+Apply object migration 000002 before deploying the updated object API. Each upload stages a unique blob path and publishes its metadata after all replicas accept the bytes. Concurrent writes can return HTTP 409 and may be retried. Reads of existing objects use their legacy paths. The object API retries deletion of staged or superseded blobs after a one-hour grace period. Quiesce old object-API writers during migration.
