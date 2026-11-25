@@ -5,24 +5,25 @@ Object API handles object metadata, placement, replication orchestration, and vi
 ## Responsibilities
 
 - Accept object upload/download/delete/hide requests behind API Gateway
-- Compute deterministic placement using hash-and-modulo
+- Choose distinct storage nodes using an FNV-1a consistent hash ring
 - Write bytes to primary and replica storage nodes
 - Persist metadata in `object_db`
 
-## Required Configuration
+## Configuration
 
 | Variable | Required | Description |
 |---|---|---|
 | OBJECT_API_PORT | Yes | HTTP port to run Object API |
 | OBJECT_DB_DSN | Yes | PostgreSQL DSN for object database |
 | STORAGE_NODES | Yes | Comma-separated list of storage node base URLs |
-| REPLICATION_FACTOR | Yes | Replica count (current implementation expects 2) |
+| REPLICATION_FACTOR | Yes | Number of copies per upload. Defaults to 2, capped at the node count. |
 | JWT_SECRET | Yes | Shared JWT signing secret |
 | JWT_ISSUER | Yes | Expected JWT issuer |
 
-## Run Locally
+## Run locally from the repository root
 
 ```bash
+cd object-api
 cp .env.example .env
 go run ./cmd
 ```
@@ -36,6 +37,7 @@ curl http://localhost:8082/healthz
 ## Endpoints
 
 ### Canonical RESTful Endpoints
+
 - `GET /api/v1/objects` - List owner's objects (`limit`, `offset`, `permission`, `visibility`, `key`)
 - `POST /api/v1/objects` - Upload object (auto-generated key or `X-Object-Key` / query `?key=`)
 - `PUT /api/v1/objects/{key}` - Upload/replace object with explicit key in URI
@@ -44,15 +46,14 @@ curl http://localhost:8082/healthz
 - `GET /api/v1/objects/{key}/exists` - Check if object exists (returns JSON `{ "exists": bool }`)
 - `DELETE /api/v1/objects/{key}` - Delete object
 - `PUT|PATCH /api/v1/objects/{key}/permission` - Update permission (`{"permission": "public-read"|"private-read"}`)
-- `PUT|PATCH /api/v1/objects/{key}/visibility` - Update visibility / hide object
+- `PUT|PATCH|POST /api/v1/objects/{key}/visibility` - Hide the object
 - `POST /api/v1/objects/{key}/shares` - Generate temporary expiring share link
 - `GET /api/v1/shares/{token}` - Download object via temporary share token (public)
 - `GET /api/v1/public/objects/{key}?owner_id={id}` - Download public object (public)
 - `DELETE /api/v1/admin/objects/{key}?owner_id={id}` - Admin force delete object
-- `PUT|PATCH /api/v1/admin/objects/{key}/visibility?owner_id={id}` - Admin force hide object
+- `PUT|PATCH|POST /api/v1/admin/objects/{key}/visibility?owner_id={id}` - Admin force hide object
 
 ### Direct S3-Style & Legacy Aliases
-- Direct: `PUT|GET|DELETE /objects/{key}`
+
+- Direct: `PUT|GET|HEAD|DELETE /objects/{key}`
 - Legacy: `/api/v1/upload-file`, `/api/v1/download-file`, `/api/v1/delete-file`, `/api/v1/hide-file`, `/api/v1/get-user-files`, `/api/v1/file-exists`, `/api/v1/make-private-read`, `/api/v1/make-public-read`, `/api/v1/share-link`, `/api/v1/share/download`, `/api/v1/public/download-file`
-
-

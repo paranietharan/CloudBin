@@ -9,7 +9,7 @@ Storage Node stores and serves raw object bytes on local disk.
 - `DELETE /objects/{key}`
 - `GET /healthz`
 
-## Required Configuration
+## Configuration
 
 | Variable | Required | Description |
 |---|---|---|
@@ -17,9 +17,10 @@ Storage Node stores and serves raw object bytes on local disk.
 | STORAGE_PORT | Yes | HTTP port for this storage node |
 | STORAGE_ROOT | Yes | Root directory for object files |
 
-## Run Locally
+## Run locally from the repository root
 
 ```bash
+cd storage-node
 cp .env.example .env
 go run ./cmd
 ```
@@ -29,4 +30,3 @@ go run ./cmd
 ```bash
 curl http://localhost:8083/healthz
 ```
-
