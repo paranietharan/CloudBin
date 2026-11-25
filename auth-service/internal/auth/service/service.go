@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"cloudbin-auth-service/internal/auth/model"
-	"cloudbin-auth-service/internal/auth/otp"
 	"cloudbin-auth-service/internal/auth/repository"
 	"cloudbin-auth-service/internal/email"
 
@@ -63,7 +62,7 @@ type Service struct {
 	emailService *email.EmailService
 }
 
-func New(repo UserRepository, otpStore *otp.Store, redisClient *redis.Client, jwtSecret, jwtIssuer string, jwtTTL time.Duration, devMode bool, smtpHost string, smtpPort int, smtpUser, smtpPass, smtpFromEmail, smtpFromName string) *Service {
+func New(repo UserRepository, otpStore OTPStore, redisClient *redis.Client, jwtSecret, jwtIssuer string, jwtTTL time.Duration, devMode bool, smtpHost string, smtpPort int, smtpUser, smtpPass, smtpFromEmail, smtpFromName string) *Service {
 	if jwtTTL <= 0 {
 		jwtTTL = 24 * time.Hour
 	}
@@ -97,48 +96,14 @@ func (s *Service) BeginRegistration(ctx context.Context, email, password string)
 	if err != nil {
 		return "", fmt.Errorf("hash password: %w", err)
 	}
-	otpCode, err := generateOTP()
-	if err != nil {
-		return "", fmt.Errorf("generate otp: %w", err)
-	}
-	tempToken := uuid.NewString()
-
-	payload := model.OTPPayload{Purpose: "register", Email: email, PasswordHash: string(hash), OTP: otpCode}
-	if err := s.otpStore.Save(ctx, tempToken, payload); err != nil {
-		return "", err
-	}
-
-	emailSent := false
-	if s.emailService != nil && s.emailService.IsConfigured() {
-		if err := s.emailService.SendAccountCreationOTPEmail(email, otpCode); err != nil {
-			log.Printf("warning: failed to send registration OTP email to %s: %v", email, err)
-		} else {
-			emailSent = true
-		}
-	}
-
-	if s.devMode || !emailSent {
-		log.Printf("register otp for %s: %s (email_sent=%t)", email, otpCode, emailSent)
-	} else {
-		log.Printf("register otp sent for %s", email)
-	}
-
-	return tempToken, nil
+	payload := model.OTPPayload{Purpose: "register", Email: email, PasswordHash: string(hash)}
+	return s.beginOTP(ctx, payload, s.emailService.SendAccountCreationOTPEmail)
 }
 
 func (s *Service) VerifyRegistrationOTP(ctx context.Context, tempToken, otpCode string) (uuid.UUID, error) {
-	payload, err := s.otpStore.Get(ctx, tempToken)
+	payload, err := s.verifyOTP(ctx, tempToken, otpCode, "register")
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return uuid.Nil, ErrOTPExpired
-		}
 		return uuid.Nil, err
-	}
-	if payload.Purpose != "register" {
-		return uuid.Nil, ErrInvalidPurpose
-	}
-	if strings.TrimSpace(payload.OTP) != strings.TrimSpace(otpCode) {
-		return uuid.Nil, ErrInvalidOTP
 	}
 
 	id, err := s.repo.CreateUser(ctx, payload.Email, payload.PasswordHash, "user")
@@ -150,7 +115,7 @@ func (s *Service) VerifyRegistrationOTP(ctx context.Context, tempToken, otpCode 
 	}
 	_ = s.otpStore.Delete(ctx, tempToken)
 
-	if s.emailService != nil && s.emailService.IsConfigured() {
+	if s.emailService.IsConfigured() {
 		if err := s.emailService.SendAccountCreatedEmail(payload.Email); err != nil {
 			log.Printf("warning: failed to send account created email to %s: %v", payload.Email, err)
 		}
@@ -173,32 +138,8 @@ func (s *Service) BeginForgotPassword(ctx context.Context, email string) (string
 		return "", ErrEmailNotFound
 	}
 
-	otpCode, err := generateOTP()
-	if err != nil {
-		return "", err
-	}
-	tempToken := uuid.NewString()
-	payload := model.OTPPayload{Purpose: "forgot_password", Email: email, OTP: otpCode}
-	if err := s.otpStore.Save(ctx, tempToken, payload); err != nil {
-		return "", err
-	}
-
-	emailSent := false
-	if s.emailService != nil && s.emailService.IsConfigured() {
-		if err := s.emailService.SendForgotPasswordEmail(email, otpCode); err != nil {
-			log.Printf("warning: failed to send forgot-password OTP email to %s: %v", email, err)
-		} else {
-			emailSent = true
-		}
-	}
-
-	if s.devMode || !emailSent {
-		log.Printf("forgot-password otp for %s: %s (email_sent=%t)", email, otpCode, emailSent)
-	} else {
-		log.Printf("forgot-password otp sent for %s", email)
-	}
-
-	return tempToken, nil
+	payload := model.OTPPayload{Purpose: "forgot_password", Email: email}
+	return s.beginOTP(ctx, payload, s.emailService.SendForgotPasswordEmail)
 }
 
 func (s *Service) VerifyForgotPasswordOTP(ctx context.Context, tempToken, otpCode, newPassword string) error {
@@ -206,18 +147,9 @@ func (s *Service) VerifyForgotPasswordOTP(ctx context.Context, tempToken, otpCod
 		return errors.New("new_password(min 6 chars) is required")
 	}
 
-	payload, err := s.otpStore.Get(ctx, tempToken)
+	payload, err := s.verifyOTP(ctx, tempToken, otpCode, "forgot_password")
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return ErrOTPExpired
-		}
 		return err
-	}
-	if payload.Purpose != "forgot_password" {
-		return ErrInvalidPurpose
-	}
-	if strings.TrimSpace(payload.OTP) != strings.TrimSpace(otpCode) {
-		return ErrInvalidOTP
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
@@ -235,6 +167,50 @@ func (s *Service) VerifyForgotPasswordOTP(ctx context.Context, tempToken, otpCod
 
 	_ = s.otpStore.Delete(ctx, tempToken)
 	return nil
+}
+
+func (s *Service) beginOTP(ctx context.Context, payload model.OTPPayload, send func(string, string) error) (string, error) {
+	code, err := generateOTP()
+	if err != nil {
+		return "", err
+	}
+	payload.OTP = code
+	tempToken := uuid.NewString()
+	if err := s.otpStore.Save(ctx, tempToken, payload); err != nil {
+		return "", err
+	}
+
+	sent := false
+	if s.emailService.IsConfigured() {
+		if err := send(payload.Email, code); err != nil {
+			log.Printf("warning: failed to send %s OTP email to %s: %v", payload.Purpose, payload.Email, err)
+		} else {
+			sent = true
+		}
+	}
+	if s.devMode || !sent {
+		log.Printf("%s otp for %s: %s (email_sent=%t)", payload.Purpose, payload.Email, code, sent)
+	} else {
+		log.Printf("%s otp sent for %s", payload.Purpose, payload.Email)
+	}
+	return tempToken, nil
+}
+
+func (s *Service) verifyOTP(ctx context.Context, tempToken, code, purpose string) (model.OTPPayload, error) {
+	payload, err := s.otpStore.Get(ctx, tempToken)
+	if errors.Is(err, redis.Nil) {
+		return model.OTPPayload{}, ErrOTPExpired
+	}
+	if err != nil {
+		return model.OTPPayload{}, err
+	}
+	if payload.Purpose != purpose {
+		return model.OTPPayload{}, ErrInvalidPurpose
+	}
+	if strings.TrimSpace(payload.OTP) != strings.TrimSpace(code) {
+		return model.OTPPayload{}, ErrInvalidOTP
+	}
+	return payload, nil
 }
 
 func (s *Service) Login(ctx context.Context, email, password string) (string, string, error) {

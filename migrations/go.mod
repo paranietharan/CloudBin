@@ -3,6 +3,7 @@ module cloudbin-migrations
 go 1.27.0
 
 require (
+	cloudbin-shared v0.0.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
@@ -18,3 +19,5 @@ require (
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
+
+replace cloudbin-shared => ../shared

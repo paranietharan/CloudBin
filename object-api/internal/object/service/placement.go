@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"slices"
-	"strings"
 )
 
 type HashRing struct {
@@ -61,10 +60,4 @@ func (hr *HashRing) GetNodes(key string, count int) []string {
 		}
 	}
 	return selected
-}
-
-func storagePath(ownerID, objectKey string) string {
-	owner := strings.TrimSpace(ownerID)
-	key := strings.TrimPrefix(strings.TrimSpace(objectKey), "/")
-	return owner + "/" + key
 }

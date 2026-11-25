@@ -61,7 +61,8 @@ services:
 
   migrate:
     build:
-      context: ./migrations
+      context: .
+      dockerfile: migrations/Dockerfile
     environment:
       AUTH_DB_DSN: ${AUTH_DB_DSN:-postgres://postgres:postgres@postgres-auth:5432/auth_db?sslmode=disable}
       OBJECT_DB_DSN: ${OBJECT_DB_DSN:-postgres://postgres:postgres@postgres-object:5432/object_db?sslmode=disable}
@@ -79,7 +80,8 @@ services:
 
   seed-auth:
     build:
-      context: ./migrations
+      context: .
+      dockerfile: migrations/Dockerfile
     environment:
       AUTH_DB_DSN: ${AUTH_DB_DSN:-postgres://postgres:postgres@postgres-auth:5432/auth_db?sslmode=disable}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
@@ -97,7 +99,8 @@ services:
 
   auth-service:
     build:
-      context: ./auth-service
+      context: .
+      dockerfile: auth-service/Dockerfile
     environment:
       AUTH_PORT: ${AUTH_PORT:-8081}
       AUTH_DB_DSN: ${AUTH_DB_DSN:-postgres://postgres:postgres@postgres-auth:5432/auth_db?sslmode=disable}
@@ -135,7 +138,8 @@ services:
 
   object-api:
     build:
-      context: ./object-api
+      context: .
+      dockerfile: object-api/Dockerfile
     environment:
       OBJECT_API_PORT: ${OBJECT_API_PORT:-8082}
       OBJECT_DB_DSN: ${OBJECT_DB_DSN:-postgres://postgres:postgres@postgres-object:5432/object_db?sslmode=disable}
@@ -170,7 +174,8 @@ services:
 
   api-gateway:
     build:
-      context: ./api-gateway
+      context: .
+      dockerfile: api-gateway/Dockerfile
     environment:
       GATEWAY_PORT: ${GATEWAY_PORT:-8080}
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8081}
@@ -193,7 +198,8 @@ services:
 
   storage-node-1:
     build:
-      context: ./storage-node
+      context: .
+      dockerfile: storage-node/Dockerfile
     environment:
       STORAGE_NODE_ID: ${STORAGE_NODE_ID_1:-node-1}
       STORAGE_PORT: ${STORAGE_PORT:-8083}
@@ -212,7 +218,8 @@ services:
 
   storage-node-2:
     build:
-      context: ./storage-node
+      context: .
+      dockerfile: storage-node/Dockerfile
     environment:
       STORAGE_NODE_ID: ${STORAGE_NODE_ID_2:-node-2}
       STORAGE_PORT: ${STORAGE_PORT:-8083}
@@ -231,7 +238,8 @@ services:
 
   storage-node-3:
     build:
-      context: ./storage-node
+      context: .
+      dockerfile: storage-node/Dockerfile
     environment:
       STORAGE_NODE_ID: ${STORAGE_NODE_ID_3:-node-3}
       STORAGE_PORT: ${STORAGE_PORT:-8083}

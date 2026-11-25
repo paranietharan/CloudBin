@@ -1,6 +1,6 @@
 package config
 
-import "os"
+import "cloudbin-shared/env"
 
 type Config struct {
 	Port   string
@@ -10,16 +10,8 @@ type Config struct {
 
 func Load() Config {
 	return Config{
-		Port:   getenv("STORAGE_PORT", "8083"),
-		Root:   getenv("STORAGE_ROOT", "./data"),
-		NodeID: getenv("STORAGE_NODE_ID", "node-1"),
+		Port:   env.String("STORAGE_PORT", "8083"),
+		Root:   env.String("STORAGE_ROOT", "./data"),
+		NodeID: env.String("STORAGE_NODE_ID", "node-1"),
 	}
-}
-
-func getenv(key, fallback string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	return v
 }

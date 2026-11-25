@@ -26,5 +26,9 @@ func (r ObjectRecord) BlobKey() string {
 	if r.StorageKey != "" {
 		return r.StorageKey
 	}
-	return strings.TrimSpace(r.OwnerUserID) + "/" + strings.TrimPrefix(strings.TrimSpace(r.ObjectKey), "/")
+	return OwnerKey(r.OwnerUserID, r.ObjectKey)
+}
+
+func OwnerKey(ownerID, objectKey string) string {
+	return strings.TrimSpace(ownerID) + "/" + strings.TrimPrefix(strings.TrimSpace(objectKey), "/")
 }

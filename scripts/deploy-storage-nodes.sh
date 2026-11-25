@@ -7,8 +7,7 @@ CONTAINER_PREFIX="cloudbin-storage-node"
 NETWORK_NAME="cloudbin-net"
 
 # Build storage-node image
-cd "$ROOT_DIR/storage-node"
-docker build -t "$IMAGE_NAME" .
+docker build -f "$ROOT_DIR/storage-node/Dockerfile" -t "$IMAGE_NAME" "$ROOT_DIR"
 
 # Ensure network exists
 if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then

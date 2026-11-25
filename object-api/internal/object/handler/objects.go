@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"cloudbin-shared/response"
+
 	"github.com/google/uuid"
 )
 
@@ -23,10 +25,10 @@ func (h *HTTP) uploadObject(w http.ResponseWriter, r *http.Request, ownerID, key
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			respondError(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size of 20 MiB")
+			response.Error(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size of 20 MiB")
 			return
 		}
-		respondError(w, http.StatusBadRequest, "failed to read body")
+		response.Error(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -35,12 +37,12 @@ func (h *HTTP) uploadObject(w http.ResponseWriter, r *http.Request, ownerID, key
 		respondServiceError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusCreated, map[string]any{"message": "object stored", "object_key": key})
+	response.JSON(w, http.StatusCreated, map[string]any{"message": "object stored", "object_key": key})
 }
 
 func (h *HTTP) downloadObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
 	if strings.TrimSpace(key) == "" {
-		respondError(w, http.StatusBadRequest, "object key is required")
+		response.Error(w, http.StatusBadRequest, "object key is required")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
@@ -51,7 +53,7 @@ func (h *HTTP) downloadObject(w http.ResponseWriter, r *http.Request, ownerID, k
 
 func (h *HTTP) headObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
 	if strings.TrimSpace(key) == "" {
-		respondError(w, http.StatusBadRequest, "object key is required")
+		response.Error(w, http.StatusBadRequest, "object key is required")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -70,7 +72,7 @@ func (h *HTTP) headObject(w http.ResponseWriter, r *http.Request, ownerID, key s
 
 func (h *HTTP) deleteObject(w http.ResponseWriter, r *http.Request, ownerID, key string) {
 	if strings.TrimSpace(key) == "" {
-		respondError(w, http.StatusBadRequest, "object key is required")
+		response.Error(w, http.StatusBadRequest, "object key is required")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -79,7 +81,7 @@ func (h *HTTP) deleteObject(w http.ResponseWriter, r *http.Request, ownerID, key
 		respondServiceError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"message": "object deleted"})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "object deleted"})
 }
 
 func (h *HTTP) objectExists(w http.ResponseWriter, r *http.Request, ownerID, key string) {
@@ -90,7 +92,7 @@ func (h *HTTP) objectExists(w http.ResponseWriter, r *http.Request, ownerID, key
 		respondServiceError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"object_key": key, "exists": exists})
+	response.JSON(w, http.StatusOK, map[string]any{"object_key": key, "exists": exists})
 }
 
 func (h *HTTP) handleGetUserFiles(w http.ResponseWriter, r *http.Request, p principal) {
@@ -105,10 +107,10 @@ func (h *HTTP) handleGetUserFiles(w http.ResponseWriter, r *http.Request, p prin
 	offset := parseIntOrDefault(query.Get("offset"), 0)
 	page, err := h.svc.ListOwnerObjectsPage(ctx, p.UserID, query.Get("permission"), query.Get("visibility"), query.Get("key"), limit, offset)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "internal server error")
+		response.Error(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{
+	response.JSON(w, http.StatusOK, map[string]any{
 		"files":  page.Files,
 		"total":  page.Total,
 		"limit":  page.Limit,

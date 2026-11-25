@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"cloudbin-object-api/internal/object/service"
+	"cloudbin-shared/response"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -62,13 +63,13 @@ func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *HTTP) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	response.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func (h *HTTP) handleObjects(w http.ResponseWriter, r *http.Request, p principal) {
 	key := strings.TrimPrefix(r.URL.Path, "/objects/")
 	if key == "" {
-		respondError(w, http.StatusBadRequest, "object key is required")
+		response.Error(w, http.StatusBadRequest, "object key is required")
 		return
 	}
 
@@ -82,7 +83,7 @@ func (h *HTTP) handleV1ObjectsRoot(w http.ResponseWriter, r *http.Request, p pri
 	case http.MethodPost:
 		h.handleUploadAlias(w, r, p)
 	default:
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -128,7 +129,7 @@ func (h *HTTP) serveOwnerObject(w http.ResponseWriter, r *http.Request, p princi
 	case http.MethodDelete:
 		h.deleteObject(w, r, p.UserID, key)
 	default:
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 

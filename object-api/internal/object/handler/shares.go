@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"cloudbin-shared/response"
 )
 
 type shareLinkRequest struct {
@@ -21,7 +23,7 @@ func (h *HTTP) handleShares(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.handleDownloadByShareLink(w, r)
 	default:
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -32,7 +34,7 @@ func (h *HTTP) handleCreateShareLink(w http.ResponseWriter, r *http.Request, p p
 
 	var req shareLinkRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -71,7 +73,7 @@ func (h *HTTP) createShareLink(w http.ResponseWriter, r *http.Request, userID, k
 		return
 	}
 
-	respondJSON(w, http.StatusCreated, map[string]any{
+	response.JSON(w, http.StatusCreated, map[string]any{
 		"token":      token,
 		"expires_at": expiresAt,
 		"url":        "/api/v1/shares/" + token,
@@ -89,7 +91,7 @@ func (h *HTTP) handleDownloadByShareLink(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if token == "" {
-		respondError(w, http.StatusBadRequest, "token is required")
+		response.Error(w, http.StatusBadRequest, "token is required")
 		return
 	}
 
@@ -119,7 +121,7 @@ func (h *HTTP) handlePublicDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ownerID == "" || key == "" {
-		respondError(w, http.StatusBadRequest, "owner_id and object_key are required")
+		response.Error(w, http.StatusBadRequest, "owner_id and object_key are required")
 		return
 	}
 

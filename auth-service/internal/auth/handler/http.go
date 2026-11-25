@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"cloudbin-auth-service/internal/auth/service"
+	"cloudbin-shared/response"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -24,7 +25,7 @@ type principal struct {
 	Role   string
 }
 
-type principalContextKey struct{}
+type authenticatedHandler func(http.ResponseWriter, *http.Request, principal)
 
 func NewHTTP(svc *service.Service, jwtSecret, jwtIssuer string) *HTTP {
 	return &HTTP{svc: svc, jwtSecret: jwtSecret, jwtIssuer: jwtIssuer}
@@ -42,11 +43,11 @@ func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/forgot-password/verify", h.handleVerifyForgotPasswordOTP)
 	mux.HandleFunc("/api/v1/auth/forgot-password/verify-otp", h.handleVerifyForgotPasswordOTP)
 	mux.HandleFunc("/api/v1/auth/tokens", h.authMiddleware(h.handleTokens))
-	mux.HandleFunc("/api/v1/auth/tokens/", h.authMiddleware(h.handleTokenByID))
+	mux.HandleFunc("/api/v1/auth/tokens/", h.authMiddleware(h.handleDeleteToken))
 
 	// Direct tokens resource aliases
 	mux.HandleFunc("/api/v1/tokens", h.authMiddleware(h.handleTokens))
-	mux.HandleFunc("/api/v1/tokens/", h.authMiddleware(h.handleTokenByID))
+	mux.HandleFunc("/api/v1/tokens/", h.authMiddleware(h.handleDeleteToken))
 
 	// Legacy aliases for backward compatibility
 	mux.HandleFunc("/api/v1/register", h.handleRegister)
@@ -61,10 +62,10 @@ func (h *HTTP) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *HTTP) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	response.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
-type registerRequest struct {
+type credentialsRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
@@ -84,11 +85,6 @@ type forgotPasswordVerifyRequest struct {
 	NewPassword string `json:"new_password"`
 }
 
-type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
 type createTokenRequest struct {
 	TokenName string `json:"token_name"`
 }
@@ -99,12 +95,12 @@ type deleteTokenRequest struct {
 
 func (h *HTTP) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req registerRequest
+	var req credentialsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -114,17 +110,17 @@ func (h *HTTP) handleRegister(w http.ResponseWriter, r *http.Request) {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusAccepted, map[string]any{"message": "otp sent for registration", "temp_token": tempToken})
+	response.JSON(w, http.StatusAccepted, map[string]any{"message": "otp sent for registration", "temp_token": tempToken})
 }
 
 func (h *HTTP) handleVerifyRegisterOTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req verifyOTPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -134,17 +130,17 @@ func (h *HTTP) handleVerifyRegisterOTP(w http.ResponseWriter, r *http.Request) {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusCreated, map[string]any{"message": "user created", "user_id": id.String()})
+	response.JSON(w, http.StatusCreated, map[string]any{"message": "user created", "user_id": id.String()})
 }
 
 func (h *HTTP) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req forgotPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -154,17 +150,17 @@ func (h *HTTP) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"message": "otp sent for password reset", "temp_token": tempToken})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "otp sent for password reset", "temp_token": tempToken})
 }
 
 func (h *HTTP) handleVerifyForgotPasswordOTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req forgotPasswordVerifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -174,17 +170,17 @@ func (h *HTTP) handleVerifyForgotPasswordOTP(w http.ResponseWriter, r *http.Requ
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]string{"message": "password updated"})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "password updated"})
 }
 
 func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req loginRequest
+	var req credentialsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -194,43 +190,32 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"token": token, "user_id": userID})
+	response.JSON(w, http.StatusOK, map[string]any{"token": token, "user_id": userID})
 }
 
-func (h *HTTP) handleOwnerOnly(w http.ResponseWriter, r *http.Request) {
+func (h *HTTP) handleOwnerOnly(w http.ResponseWriter, r *http.Request, p principal) {
 	if r.Method != http.MethodGet {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	p, ok := principalFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	ownerID := strings.TrimSpace(r.URL.Query().Get("owner_id"))
 	if !isOwnerOrAdmin(p, ownerID) {
-		respondError(w, http.StatusForbidden, "only owner or admin can access this resource")
+		response.Error(w, http.StatusForbidden, "only owner or admin can access this resource")
 		return
 	}
 
-	respondJSON(w, http.StatusOK, map[string]string{"message": "hello"})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "hello"})
 }
 
-func (h *HTTP) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+func (h *HTTP) handleCreateToken(w http.ResponseWriter, r *http.Request, p principal) {
 	if r.Method != http.MethodPost {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	p, ok := principalFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req createTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		response.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -240,17 +225,12 @@ func (h *HTTP) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusCreated, map[string]any{"token": token, "token_name": req.TokenName, "expires_at": exp})
+	response.JSON(w, http.StatusCreated, map[string]any{"token": token, "token_name": req.TokenName, "expires_at": exp})
 }
 
-func (h *HTTP) handleListTokens(w http.ResponseWriter, r *http.Request) {
+func (h *HTTP) handleListTokens(w http.ResponseWriter, r *http.Request, p principal) {
 	if r.Method != http.MethodGet {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	p, ok := principalFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -260,42 +240,29 @@ func (h *HTTP) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"tokens": tokens})
+	response.JSON(w, http.StatusOK, map[string]any{"tokens": tokens})
 }
 
-func (h *HTTP) handleTokens(w http.ResponseWriter, r *http.Request) {
+func (h *HTTP) handleTokens(w http.ResponseWriter, r *http.Request, p principal) {
 	switch r.Method {
 	case http.MethodGet:
-		h.handleListTokens(w, r)
+		h.handleListTokens(w, r, p)
 	case http.MethodPost:
-		h.handleCreateToken(w, r)
+		h.handleCreateToken(w, r, p)
 	default:
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *HTTP) handleTokenByID(w http.ResponseWriter, r *http.Request) {
+func (h *HTTP) handleDeleteToken(w http.ResponseWriter, r *http.Request, p principal) {
 	if r.Method != http.MethodDelete {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	h.handleDeleteToken(w, r)
-}
-
-func (h *HTTP) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	p, ok := principalFromContext(r.Context())
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
+		response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	tokenID := readTokenID(r)
 	if tokenID == "" {
-		respondError(w, http.StatusBadRequest, "token_id is required")
+		response.Error(w, http.StatusBadRequest, "token_id is required")
 		return
 	}
 
@@ -305,7 +272,7 @@ func (h *HTTP) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 		h.mapError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]string{"message": "token revoked"})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "token revoked"})
 }
 
 func readTokenID(r *http.Request) string {
@@ -330,12 +297,12 @@ func readTokenID(r *http.Request) string {
 	return ""
 }
 
-func (h *HTTP) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+func (h *HTTP) authMiddleware(next authenticatedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer"))
 		if token == "" {
-			respondError(w, http.StatusUnauthorized, "missing bearer token")
+			response.Error(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
 		claims := jwt.MapClaims{}
@@ -346,7 +313,7 @@ func (h *HTTP) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return []byte(h.jwtSecret), nil
 		})
 		if err != nil {
-			respondError(w, http.StatusUnauthorized, "invalid token")
+			response.Error(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 		subject, _ := claims["sub"].(string)
@@ -354,24 +321,15 @@ func (h *HTTP) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		role, _ := claims["role"].(string)
 		jti, _ := claims["jti"].(string)
 		if subject == "" || issuer != h.jwtIssuer {
-			respondError(w, http.StatusUnauthorized, "invalid token issuer")
+			response.Error(w, http.StatusUnauthorized, "invalid token issuer")
 			return
 		}
 		if jti != "" && h.svc.IsTokenRevoked(r.Context(), jti) {
-			respondError(w, http.StatusUnauthorized, "token has been revoked")
+			response.Error(w, http.StatusUnauthorized, "token has been revoked")
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal{UserID: subject, Role: role})))
+		next(w, r, principal{UserID: subject, Role: role})
 	}
-}
-
-func principalFromContext(ctx context.Context) (principal, bool) {
-	v := ctx.Value(principalContextKey{})
-	if v == nil {
-		return principal{}, false
-	}
-	p, ok := v.(principal)
-	return p, ok
 }
 
 func isOwnerOrAdmin(p principal, ownerID string) bool {
@@ -386,56 +344,20 @@ func (h *HTTP) mapError(w http.ResponseWriter, err error) {
 	case err == nil:
 		return
 	case errors.Is(err, service.ErrEmailExists):
-		respondError(w, http.StatusConflict, err.Error())
+		response.Error(w, http.StatusConflict, err.Error())
 	case errors.Is(err, service.ErrEmailNotFound), errors.Is(err, service.ErrTokenNotFound):
-		respondError(w, http.StatusNotFound, err.Error())
+		response.Error(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, service.ErrInvalidCredentials), errors.Is(err, service.ErrInvalidOTP):
-		respondError(w, http.StatusUnauthorized, err.Error())
+		response.Error(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, service.ErrNotVerified), errors.Is(err, service.ErrInactiveOrDeleted):
-		respondError(w, http.StatusForbidden, err.Error())
+		response.Error(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, service.ErrOTPExpired), errors.Is(err, service.ErrInvalidPurpose):
-		respondError(w, http.StatusBadRequest, err.Error())
+		response.Error(w, http.StatusBadRequest, err.Error())
 	default:
 		if strings.Contains(err.Error(), "required") {
-			respondError(w, http.StatusBadRequest, err.Error())
+			response.Error(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "internal server error")
+		response.Error(w, http.StatusInternalServerError, "internal server error")
 	}
-}
-
-func respondJSON(w http.ResponseWriter, status int, payload any) {
-	success := status >= http.StatusOK && status < http.StatusMultipleChoices
-	wrapped := payload
-	switch v := payload.(type) {
-	case map[string]any:
-		if _, ok := v["success"]; !ok {
-			v["success"] = success
-		}
-		wrapped = v
-	case map[string]string:
-		m := make(map[string]any, len(v)+1)
-		for k, val := range v {
-			m[k] = val
-		}
-		m["success"] = success
-		wrapped = m
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(wrapped)
-}
-
-func respondError(w http.ResponseWriter, status int, message string) {
-	respondJSON(w, status, map[string]string{"error": message, "error_code": errorCodeFromStatus(status)})
-}
-
-func errorCodeFromStatus(status int) string {
-	code := strings.ToLower(http.StatusText(status))
-	code = strings.ReplaceAll(code, " ", "_")
-	if code == "" {
-		return "internal_server_error"
-	}
-	return code
 }

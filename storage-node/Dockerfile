@@ -1,13 +1,15 @@
 # syntax=docker/dockerfile:1
 
 FROM golang:1.27.3-alpine3.24 AS builder
-WORKDIR /src
+WORKDIR /src/storage-node
 
 # Cache module downloads first (go.sum may not exist yet in this module).
-COPY go.mod ./
+COPY storage-node/go.mod ./
+COPY shared/go.mod /src/shared/
 RUN go mod download
 
-COPY . .
+COPY shared /src/shared
+COPY storage-node/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/storage-node ./cmd
 
 FROM alpine:3.24

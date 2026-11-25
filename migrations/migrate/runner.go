@@ -15,47 +15,24 @@ type Runner struct {
 }
 
 func (r Runner) Up() error {
-	m, err := migrate.New(r.SourceDir, r.DBURL)
-	if err != nil {
-		return fmt.Errorf("create migrate instance: %w", err)
-	}
-	defer closeMigrate(m)
-
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		return fmt.Errorf("apply up migrations: %w", err)
-	}
-
-	log.Println("migrations applied")
-	return nil
+	return r.run("up", (*migrate.Migrate).Up)
 }
 
 func (r Runner) Down() error {
-	m, err := migrate.New(r.SourceDir, r.DBURL)
-	if err != nil {
-		return fmt.Errorf("create migrate instance: %w", err)
-	}
-	defer closeMigrate(m)
-
-	if err := m.Down(); err != nil && err != migrate.ErrNoChange {
-		return fmt.Errorf("apply down migrations: %w", err)
-	}
-
-	log.Println("migrations reverted")
-	return nil
+	return r.run("down", (*migrate.Migrate).Down)
 }
 
-func (r Runner) Force(version int) error {
+func (r Runner) run(direction string, apply func(*migrate.Migrate) error) error {
 	m, err := migrate.New(r.SourceDir, r.DBURL)
 	if err != nil {
 		return fmt.Errorf("create migrate instance: %w", err)
 	}
 	defer closeMigrate(m)
 
-	if err := m.Force(version); err != nil {
-		return fmt.Errorf("force migration version: %w", err)
+	if err := apply(m); err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("apply %s migrations: %w", direction, err)
 	}
-
-	log.Printf("forced migration version to %d", version)
+	log.Printf("%s migrations completed", direction)
 	return nil
 }
 

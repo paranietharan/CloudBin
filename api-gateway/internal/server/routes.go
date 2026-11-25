@@ -1,6 +1,9 @@
 package server
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // Requests under these prefixes are routed to the object-api.
 var objectPathPrefixes = []string{
@@ -13,19 +16,18 @@ var objectPathPrefixes = []string{
 }
 
 var objectExactPaths = map[string]struct{}{
-	"/api/v1/upload-file":          {},
-	"/api/v1/download-file":        {},
-	"/api/v1/delete-file":          {},
-	"/api/v1/hide-file":            {},
-	"/api/v1/admin/hide-file":      {},
-	"/api/v1/admin/delete-file":    {},
-	"/api/v1/get-user-files":       {},
-	"/api/v1/file-exists":          {},
-	"/api/v1/make-private-read":    {},
-	"/api/v1/make-public-read":     {},
-	"/api/v1/share-link":           {},
-	"/api/v1/share/download":       {},
-	"/api/v1/public/download-file": {},
+	"/api/v1/upload-file":       {},
+	"/api/v1/download-file":     {},
+	"/api/v1/delete-file":       {},
+	"/api/v1/hide-file":         {},
+	"/api/v1/admin/hide-file":   {},
+	"/api/v1/admin/delete-file": {},
+	"/api/v1/get-user-files":    {},
+	"/api/v1/file-exists":       {},
+	"/api/v1/make-private-read": {},
+	"/api/v1/make-public-read":  {},
+	"/api/v1/share-link":        {},
+	"/api/v1/share/download":    {},
 }
 
 // Requests under these prefixes are routed to the auth-service.
@@ -49,7 +51,6 @@ var authExactRoutes = map[string]struct{}{
 
 // publicExactRoutes are always allowed without a JWT token.
 var publicExactRoutes = map[string]struct{}{
-	"/healthz":                                {},
 	"/api/v1/auth/register":                   {},
 	"/api/v1/auth/register/verify":            {},
 	"/api/v1/auth/register/verify-otp":        {},
@@ -96,7 +97,7 @@ func isObjectPath(path string) bool {
 // hasAnyPrefix reports whether s starts with any of the given prefixes.
 func hasAnyPrefix(s string, prefixes ...string) bool {
 	for _, p := range prefixes {
-		if len(s) >= len(p) && s[:len(p)] == p {
+		if strings.HasPrefix(s, p) {
 			return true
 		}
 	}

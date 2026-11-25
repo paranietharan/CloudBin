@@ -7,13 +7,15 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"cloudbin-shared/response"
 )
 
 func allowMethod(w http.ResponseWriter, r *http.Request, methods ...string) bool {
 	if slices.Contains(methods, r.Method) {
 		return true
 	}
-	respondError(w, http.StatusMethodNotAllowed, "method not allowed")
+	response.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 	return false
 }
 

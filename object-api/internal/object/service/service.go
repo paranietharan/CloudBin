@@ -80,7 +80,7 @@ func (s *Service) Upload(ctx context.Context, ownerID, objectKey, contentType st
 		contentType = "application/octet-stream"
 	}
 
-	targetNodes := s.hashRing.GetNodes(storagePath(ownerID, objectKey), s.replicationFactor)
+	targetNodes := s.hashRing.GetNodes(model.OwnerKey(ownerID, objectKey), s.replicationFactor)
 	if len(targetNodes) < 2 {
 		return ErrInvalidNodeConfig
 	}

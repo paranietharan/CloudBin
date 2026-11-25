@@ -1,9 +1,9 @@
 package config
 
 import (
-	"os"
-	"strconv"
 	"strings"
+
+	"cloudbin-shared/env"
 )
 
 type Config struct {
@@ -12,7 +12,6 @@ type Config struct {
 	RedisAddr         string
 	RedisPassword     string
 	RedisDB           int
-	DEVMode           bool
 	StorageNodes      []string
 	ReplicationFactor int
 	JWTSecret         string
@@ -20,19 +19,18 @@ type Config struct {
 }
 
 func Load() Config {
-	nodes := parseNodeList(getenv("STORAGE_NODES", "localhost:8083,localhost:8084,localhost:8085"))
+	nodes := parseNodeList(env.String("STORAGE_NODES", "localhost:8083,localhost:8084,localhost:8085"))
 
 	return Config{
-		Port:              getenv("OBJECT_API_PORT", "8082"),
-		DBDSN:             getenv("OBJECT_DB_DSN", "postgres://postgres:postgres@localhost:5432/object_db?sslmode=disable"),
-		RedisAddr:         getenv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword:     getenv("REDIS_PASSWORD", ""),
-		RedisDB:           getenvInt("REDIS_DB", 0),
-		DEVMode:           getenvBool("DEV_MODE", false),
+		Port:              env.String("OBJECT_API_PORT", "8082"),
+		DBDSN:             env.String("OBJECT_DB_DSN", "postgres://postgres:postgres@localhost:5432/object_db?sslmode=disable"),
+		RedisAddr:         env.String("REDIS_ADDR", "localhost:6379"),
+		RedisPassword:     env.String("REDIS_PASSWORD", ""),
+		RedisDB:           env.Int("REDIS_DB", 0),
 		StorageNodes:      nodes,
-		ReplicationFactor: getenvInt("REPLICATION_FACTOR", 2),
-		JWTSecret:         getenv("JWT_SECRET", "change-me"),
-		JWTIssuer:         getenv("JWT_ISSUER", "cloudbin-auth"),
+		ReplicationFactor: env.Int("REPLICATION_FACTOR", 2),
+		JWTSecret:         env.String("JWT_SECRET", "change-me"),
+		JWTIssuer:         env.String("JWT_ISSUER", "cloudbin-auth"),
 	}
 }
 
@@ -50,36 +48,4 @@ func parseNodeList(raw string) []string {
 		nodes = append(nodes, v)
 	}
 	return nodes
-}
-
-func getenv(key, fallback string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	return v
-}
-
-func getenvInt(key string, fallback int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-func getenvBool(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseBool(v)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }

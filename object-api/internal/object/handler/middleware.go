@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"cloudbin-shared/response"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -35,7 +37,7 @@ func (h *HTTP) authMiddleware(next authenticatedHandler) http.HandlerFunc {
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer"))
 		if token == "" {
-			respondError(w, http.StatusUnauthorized, "missing bearer token")
+			response.Error(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
 		claims := jwt.MapClaims{}
@@ -46,14 +48,14 @@ func (h *HTTP) authMiddleware(next authenticatedHandler) http.HandlerFunc {
 			return []byte(h.jwtSecret), nil
 		})
 		if err != nil {
-			respondError(w, http.StatusUnauthorized, "invalid token")
+			response.Error(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 		subject, _ := claims["sub"].(string)
 		issuer, _ := claims["iss"].(string)
 		role, _ := claims["role"].(string)
 		if subject == "" || issuer != h.jwtIssuer {
-			respondError(w, http.StatusUnauthorized, "invalid token issuer")
+			response.Error(w, http.StatusUnauthorized, "invalid token issuer")
 			return
 		}
 		next(w, r, principal{UserID: subject, Role: role})

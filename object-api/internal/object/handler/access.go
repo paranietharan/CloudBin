@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"cloudbin-shared/response"
 )
 
 type permissionRequest struct {
@@ -22,7 +24,7 @@ func (h *HTTP) handleObjectPermission(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	if !h.allowByUserAndIP(r, userID, "permission", 60, time.Minute) {
-		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for permission updates")
+		response.Error(w, http.StatusTooManyRequests, "rate limit exceeded for permission updates")
 		return
 	}
 
@@ -41,7 +43,7 @@ func (h *HTTP) handleObjectPermission(w http.ResponseWriter, r *http.Request, us
 		respondServiceError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"message": "permission set to " + perm, "permission": perm})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "permission set to " + perm, "permission": perm})
 }
 
 func (h *HTTP) handleObjectVisibility(w http.ResponseWriter, r *http.Request, actor principal, ownerID, key, reason string) {
@@ -62,7 +64,7 @@ func (h *HTTP) handleObjectVisibility(w http.ResponseWriter, r *http.Request, ac
 		respondServiceError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"message": "object hidden", "visibility": "hidden"})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "object hidden", "visibility": "hidden"})
 }
 
 func (h *HTTP) handleAdminObjects(w http.ResponseWriter, r *http.Request, p principal) {
@@ -77,7 +79,7 @@ func (h *HTTP) handleAdminObjects(w http.ResponseWriter, r *http.Request, p prin
 		key = readObjectKey(r)
 	}
 	if key == "" {
-		respondError(w, http.StatusBadRequest, "object key is required")
+		response.Error(w, http.StatusBadRequest, "object key is required")
 		return
 	}
 
@@ -94,13 +96,13 @@ func (h *HTTP) handleAdminObjects(w http.ResponseWriter, r *http.Request, p prin
 
 func adminOwnerID(w http.ResponseWriter, r *http.Request, p principal) string {
 	if !isPrivileged(p) {
-		respondError(w, http.StatusForbidden, "admin route requires admin or owner role")
+		response.Error(w, http.StatusForbidden, "admin route requires admin or owner role")
 		return ""
 	}
 
 	ownerID := readOwnerID(r)
 	if ownerID == "" {
-		respondError(w, http.StatusBadRequest, "owner_id is required")
+		response.Error(w, http.StatusBadRequest, "owner_id is required")
 		return ""
 	}
 	return ownerID

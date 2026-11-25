@@ -45,6 +45,8 @@ CloudBin is a multi-service object storage backend written in **Go**, backed by 
 
 ## Quick Start (Docker Compose)
 
+Service images use the repository root as their build context so they can include the shared Go packages. To build a single image directly, run `docker build -f object-api/Dockerfile .` from the root, substituting the service directory as needed.
+
 ### Start the Full Stack
 ```bash
 docker compose up --build

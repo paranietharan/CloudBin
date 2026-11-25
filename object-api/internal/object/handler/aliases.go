@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"cloudbin-shared/response"
 )
 
 func (h *HTTP) handleUploadAlias(w http.ResponseWriter, r *http.Request, p principal) {
@@ -11,7 +13,7 @@ func (h *HTTP) handleUploadAlias(w http.ResponseWriter, r *http.Request, p princ
 		return
 	}
 	if !h.allowByUserAndIP(r, p.UserID, "upload", 30, time.Minute) {
-		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for upload")
+		response.Error(w, http.StatusTooManyRequests, "rate limit exceeded for upload")
 		return
 	}
 	key := readObjectKey(r)
@@ -31,7 +33,7 @@ func (h *HTTP) handleDeleteAlias(w http.ResponseWriter, r *http.Request, p princ
 		return
 	}
 	if !h.allowByUserAndIP(r, p.UserID, "delete", 40, time.Minute) {
-		respondError(w, http.StatusTooManyRequests, "rate limit exceeded for delete")
+		response.Error(w, http.StatusTooManyRequests, "rate limit exceeded for delete")
 		return
 	}
 	key := readObjectKey(r)
@@ -49,14 +51,7 @@ func (h *HTTP) handleHideAlias(w http.ResponseWriter, r *http.Request, p princip
 	if !allowMethod(w, r, http.MethodPut) {
 		return
 	}
-	key := readObjectKey(r)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	if err := h.svc.Hide(ctx, p.UserID, key, p.UserID, p.Role, "owner hide"); err != nil {
-		respondServiceError(w, err)
-		return
-	}
-	respondJSON(w, http.StatusOK, map[string]any{"message": "object hidden"})
+	h.hideAlias(w, r, p, p.UserID, "owner hide")
 }
 
 func (h *HTTP) handleAdminHideAlias(w http.ResponseWriter, r *http.Request, p principal) {
@@ -67,14 +62,18 @@ func (h *HTTP) handleAdminHideAlias(w http.ResponseWriter, r *http.Request, p pr
 	if ownerID == "" {
 		return
 	}
+	h.hideAlias(w, r, p, ownerID, "admin hide")
+}
+
+func (h *HTTP) hideAlias(w http.ResponseWriter, r *http.Request, p principal, ownerID, reason string) {
 	key := readObjectKey(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if err := h.svc.Hide(ctx, ownerID, key, p.UserID, p.Role, "admin hide"); err != nil {
+	if err := h.svc.Hide(ctx, ownerID, key, p.UserID, p.Role, reason); err != nil {
 		respondServiceError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"message": "object hidden"})
+	response.JSON(w, http.StatusOK, map[string]any{"message": "object hidden"})
 }
 
 func (h *HTTP) handleAdminDeleteAlias(w http.ResponseWriter, r *http.Request, p principal) {
@@ -95,7 +94,7 @@ func (h *HTTP) permissionAlias(permission string) authenticatedHandler {
 			return
 		}
 		if !h.allowByUserAndIP(r, p.UserID, "permission", 60, time.Minute) {
-			respondError(w, http.StatusTooManyRequests, "rate limit exceeded for permission updates")
+			response.Error(w, http.StatusTooManyRequests, "rate limit exceeded for permission updates")
 			return
 		}
 		key := readObjectKey(r)
@@ -105,6 +104,6 @@ func (h *HTTP) permissionAlias(permission string) authenticatedHandler {
 			respondServiceError(w, err)
 			return
 		}
-		respondJSON(w, http.StatusOK, map[string]any{"message": "permission set to " + permission})
+		response.JSON(w, http.StatusOK, map[string]any{"message": "permission set to " + permission})
 	}
 }
