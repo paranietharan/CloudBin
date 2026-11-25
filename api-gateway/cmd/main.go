@@ -24,7 +24,7 @@ func main() {
 
 	log.Printf("api gateway listening on :%s", cfg.Port)
 	errCh := make(chan error, 1)
-	go func() {
+	go func() { // http server run in a child thread
 		errCh <- srv.ListenAndServe()
 	}()
 
