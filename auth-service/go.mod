@@ -3,6 +3,7 @@ module cloudbin-auth-service
 go 1.27.0
 
 require (
+	cloudbin-shared v0.0.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
@@ -22,3 +23,5 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
 )
+
+replace cloudbin-shared => ../shared

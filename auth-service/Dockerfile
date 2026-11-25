@@ -3,10 +3,12 @@
 FROM golang:1.27.3-alpine3.24 AS builder
 WORKDIR /src/auth-service
 
-COPY go.mod go.sum ./
+COPY auth-service/go.mod auth-service/go.sum ./
+COPY shared/go.mod /src/shared/
 RUN go mod download
 
-COPY . ./
+COPY shared /src/shared
+COPY auth-service/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/auth-service ./cmd
 
 FROM alpine:3.24

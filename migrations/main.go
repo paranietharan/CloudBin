@@ -1,18 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"cloudbin-migrations/migrate"
 	"cloudbin-migrations/seed"
+	"cloudbin-shared/env"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -23,19 +22,15 @@ func main() {
 	target := flag.String("target", "auth", "target db: auth|object")
 	flag.Parse()
 
-	root, err := projectRoot()
-	if err != nil {
-		log.Fatalf("failed to read working directory: %v", err)
-	}
-	loadDotEnv(filepath.Join(root, "migrations", ".env"))
-	loadDotEnv(filepath.Join(root, ".env"))
+	env.LoadFile(".env")
+	env.LoadFile("../.env")
 
 	if *migrateAction == "" && !*seedFlag {
 		log.Fatalf("no action provided. use -migrate=up|down and/or -seed")
 	}
 
 	if *migrateAction != "" {
-		if err := runMigrate(*target, *migrateAction, root); err != nil {
+		if err := runMigrate(*target, *migrateAction); err != nil {
 			log.Fatalf("migration failed: %v", err)
 		}
 	}
@@ -47,12 +42,12 @@ func main() {
 	}
 }
 
-func runMigrate(target, action, root string) error {
+func runMigrate(target, action string) error {
 	if action != "up" && action != "down" {
 		return fmt.Errorf("unsupported migrate action %q (use up or down)", action)
 	}
 
-	dsnEnv, dir, err := targetConfig(target, root)
+	dsnEnv, dir, err := targetConfig(target)
 	if err != nil {
 		return err
 	}
@@ -71,14 +66,10 @@ func runMigrate(target, action, root string) error {
 		DBURL:     dsn,
 	}
 
-	switch action {
-	case "up":
+	if action == "up" {
 		return r.Up()
-	case "down":
-		return r.Down()
-	default:
-		return fmt.Errorf("unsupported migrate action %q", action)
 	}
+	return r.Down()
 }
 
 func prepareLegacySchemaMigrations(dsn string) error {
@@ -133,70 +124,13 @@ func runSeed(target string) error {
 	}
 }
 
-func targetConfig(target, root string) (dsnEnv string, dir string, err error) {
+func targetConfig(target string) (dsnEnv string, dir string, err error) {
 	switch target {
 	case "auth":
-		return "AUTH_DB_DSN", filepath.Join(root, "migrations", "auth"), nil
+		return "AUTH_DB_DSN", "./auth", nil
 	case "object":
-		return "OBJECT_DB_DSN", filepath.Join(root, "migrations", "object"), nil
+		return "OBJECT_DB_DSN", "./object", nil
 	default:
 		return "", "", fmt.Errorf("unknown target %q (use auth or object)", target)
-	}
-}
-
-func projectRoot() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	dir := cwd
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
-			return dir, nil
-		}
-		if _, err := os.Stat(filepath.Join(dir, ".env")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return cwd, nil
-}
-
-func loadDotEnv(path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if key == "" {
-			continue
-		}
-
-		if _, exists := os.LookupEnv(key); !exists {
-			_ = os.Setenv(key, value)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Printf("warning: failed to scan %s: %v", path, err)
 	}
 }

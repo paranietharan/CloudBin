@@ -3,10 +3,12 @@
 FROM golang:1.27.3-alpine3.24 AS builder
 WORKDIR /src/object-api
 
-COPY go.mod go.sum ./
+COPY object-api/go.mod object-api/go.sum ./
+COPY shared/go.mod /src/shared/
 RUN go mod download
 
-COPY . ./
+COPY shared /src/shared
+COPY object-api/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/object-api ./cmd
 
 FROM alpine:3.24

@@ -1,0 +1,8 @@
+*
+!api-gateway
+!auth-service
+!migrations
+!object-api
+!shared
+!storage-node
+**/.env*

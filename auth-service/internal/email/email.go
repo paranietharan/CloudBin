@@ -55,38 +55,24 @@ func (s *EmailService) IsConfigured() bool {
 }
 
 func (s *EmailService) SendAccountCreationOTPEmail(toEmail, otpCode string) error {
-	body, err := s.renderTemplate("user-creation-otp-template.html", struct {
-		OTP string
-	}{OTP: otpCode})
-	if err != nil {
-		return err
-	}
-	return s.send(toEmail, "CloudBin account verification", body)
+	return s.sendTemplate(toEmail, "CloudBin account verification", "user-creation-otp-template.html", map[string]string{"OTP": otpCode})
 }
 
 func (s *EmailService) SendForgotPasswordEmail(toEmail, otpCode string) error {
-	body, err := s.renderTemplate("forgot-password-email-template.html", struct {
-		OTP string
-	}{OTP: otpCode})
-	if err != nil {
-		return err
-	}
-	return s.send(toEmail, "CloudBin forgot password", body)
+	return s.sendTemplate(toEmail, "CloudBin forgot password", "forgot-password-email-template.html", map[string]string{"OTP": otpCode})
 }
 
 func (s *EmailService) SendAccountCreatedEmail(toEmail string) error {
-	body, err := s.renderTemplate("account-created-email-template.html", struct {
-		SupportEmail string
-	}{SupportEmail: s.fromEmail})
-	if err != nil {
-		return err
-	}
-	return s.send(toEmail, "Welcome to CloudBin", body)
+	return s.sendTemplate(toEmail, "Welcome to CloudBin", "account-created-email-template.html", map[string]string{"SupportEmail": s.fromEmail})
 }
 
-func (s *EmailService) send(toEmail, subject, htmlContent string) error {
+func (s *EmailService) sendTemplate(toEmail, subject, name string, data map[string]string) error {
 	if !s.IsConfigured() {
 		return fmt.Errorf("email service is not configured")
+	}
+	htmlContent, err := s.renderTemplate(name, data)
+	if err != nil {
+		return err
 	}
 
 	m := gomail.NewMessage()

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="462" viewBox="0 0 1080 462" role="img" aria-labelledby="title desc">
+<title id="title">CloudBin service architecture</title>
+<desc id="desc">Clients reach the gateway, which routes HTTP requests to the auth service or object API. Auth uses SMTP, its PostgreSQL database and Redis. The object API uses Redis, its own PostgreSQL database and three disk-backed storage nodes. Migrations prepare both databases.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" markerWidth="6" markerHeight="6" refX="9" refY="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#506379"/></marker></defs>
+<style>text{font-family:Arial,Helvetica,sans-serif}.name{font-size:19px;font-weight:700;fill:#152e45}.detail{font-size:14px;fill:#3c536a}.edge{fill:none;stroke:#506379;stroke-width:2;stroke-linejoin:round;marker-end:url(#arrow)}</style>
+<rect width="1080" height="462" rx="16" fill="#f4f7fa"/>
+<path class="edge" d="M430 58H505"/>
+<path class="edge" d="M610 92V115H285V147"/>
+<path class="edge" d="M610 115H797V147"/>
+<path class="edge" d="M245 216V240H106V271"/>
+<path class="edge" d="M315 216V271"/>
+<path class="edge" d="M371 216V240H511V271"/>
+<path class="edge" d="M718 216V240H563V271"/>
+<path class="edge" d="M759 216V271"/>
+<path class="edge" d="M858 216V240H969V271"/>
+<path class="edge" d="M438 407H315V342" stroke-dasharray="5 4"/>
+<path class="edge" d="M642 407H759V342" stroke-dasharray="5 4"/>
+<rect x="260.0" y="24" width="170" height="68" rx="11" fill="#fff" stroke="#a4b4c3" stroke-width="1.5"/>
+<text x="345" y="53" text-anchor="middle" class="name">Client</text><text x="345" y="75" text-anchor="middle" class="detail">HTTP requests</text>
+<rect x="510.0" y="24" width="200" height="68" rx="11" fill="#d8e9fb" stroke="#759bbd" stroke-width="1.5"/>
+<text x="610" y="53" text-anchor="middle" class="name">API gateway</text><text x="610" y="75" text-anchor="middle" class="detail">JWT check · port 8080</text>
+<rect x="160.0" y="148" width="250" height="68" rx="11" fill="#daf1eb" stroke="#76aa9d" stroke-width="1.5"/>
+<text x="285" y="177" text-anchor="middle" class="name">Auth service</text><text x="285" y="199" text-anchor="middle" class="detail">Accounts and tokens · 8081</text>
+<rect x="672.0" y="148" width="250" height="68" rx="11" fill="#daf1eb" stroke="#76aa9d" stroke-width="1.5"/>
+<text x="797" y="177" text-anchor="middle" class="name">Object API</text><text x="797" y="199" text-anchor="middle" class="detail">Files and sharing · 8082</text>
+<rect x="14.5" y="272" width="183" height="68" rx="11" fill="#fff" stroke="#a4b4c3" stroke-width="1.5"/>
+<text x="106" y="301" text-anchor="middle" class="name">SMTP</text><text x="106" y="323" text-anchor="middle" class="detail">Mailpit in Compose</text>
+<rect x="224.0" y="272" width="182" height="68" rx="11" fill="#fff" stroke="#a4b4c3" stroke-width="1.5"/>
+<text x="315" y="301" text-anchor="middle" class="name">Auth database</text><text x="315" y="323" text-anchor="middle" class="detail">PostgreSQL · auth_db</text>
+<rect x="440.0" y="272" width="194" height="68" rx="11" fill="#fff" stroke="#a4b4c3" stroke-width="1.5"/>
+<text x="537" y="301" text-anchor="middle" class="name">Redis</text><text x="537" y="323" text-anchor="middle" class="detail">Codes, links and limits</text>
+<rect x="663.0" y="272" width="192" height="68" rx="11" fill="#fff" stroke="#a4b4c3" stroke-width="1.5"/>
+<text x="759" y="301" text-anchor="middle" class="name">Object database</text><text x="759" y="323" text-anchor="middle" class="detail">PostgreSQL · object_db</text>
+<rect x="875.0" y="272" width="188" height="68" rx="11" fill="#fff" stroke="#a4b4c3" stroke-width="1.5"/>
+<text x="969" y="301" text-anchor="middle" class="name">Storage nodes ×3</text><text x="969" y="323" text-anchor="middle" class="detail">One volume per node</text>
+<rect x="439.0" y="374" width="202" height="68" rx="11" fill="#e9e6f8" stroke="#a29abd" stroke-width="1.5"/>
+<text x="540" y="403" text-anchor="middle" class="name">Migrations</text><text x="540" y="425" text-anchor="middle" class="detail">One-time schema setup</text>
+</svg>

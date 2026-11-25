@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"cloudbin-api-gateway/internal/config"
+	"cloudbin-shared/response"
 )
 
 func New(cfg config.Config) *http.Server {
@@ -36,7 +37,7 @@ func makeHandler(cfg config.Config, authProxy, objectProxy http.Handler) http.Ha
 		if !isPublicRoute(r.URL.Path, r.Method) {
 			claims, err := validateBearerJWT(r.Header.Get("Authorization"), cfg.JWTSecret, cfg.JWTIssuer)
 			if err != nil {
-				respondError(w, http.StatusUnauthorized, "unauthorized")
+				response.Error(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			r.Header.Set("X-User-ID", claims.UserID)
@@ -50,7 +51,7 @@ func makeHandler(cfg config.Config, authProxy, objectProxy http.Handler) http.Ha
 		case isObjectPath(r.URL.Path):
 			objectProxy.ServeHTTP(w, r)
 		default:
-			respondError(w, http.StatusNotFound, "route not found")
+			response.Error(w, http.StatusNotFound, "route not found")
 		}
 	}
 }
@@ -63,11 +64,11 @@ func mustProxy(rawURL string) *httputil.ReverseProxy {
 	p := httputil.NewSingleHostReverseProxy(target)
 	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("proxy error: %s %s → %v", r.Method, r.URL.Path, err)
-		respondError(w, http.StatusBadGateway, "upstream service unavailable")
+		response.Error(w, http.StatusBadGateway, "upstream service unavailable")
 	}
 	return p
 }
 
 func healthz(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	response.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
