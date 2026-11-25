@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"errors"
-	"time"
 
 	"cloudbin-object-api/internal/object/model"
 
@@ -176,44 +175,6 @@ func (p *Postgres) DeleteVersion(ctx context.Context, rec model.ObjectRecord) (b
 	return deleted, err
 }
 
-func (p *Postgres) ListByOwner(ctx context.Context, ownerID string) ([]model.ObjectRecord, error) {
-	rows, err := p.db.Query(ctx, `
-		SELECT o.id, o.owner_user_id, o.object_key, COALESCE(o.content_type, ''), o.size_bytes, COALESCE(o.etag, ''),
-		       o.permission, o.visibility, op.primary_node_id, op.replica_node_id, o.created_at, o.updated_at
-		FROM objects o
-		JOIN object_placements op ON op.object_id = o.id
-		WHERE o.owner_user_id = $1 AND o.deleted_at IS NULL
-		ORDER BY o.updated_at DESC
-	`, ownerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]model.ObjectRecord, 0)
-	for rows.Next() {
-		var rec model.ObjectRecord
-		if err := rows.Scan(
-			&rec.ID,
-			&rec.OwnerUserID,
-			&rec.ObjectKey,
-			&rec.ContentType,
-			&rec.SizeBytes,
-			&rec.ETag,
-			&rec.Permission,
-			&rec.Visibility,
-			&rec.PrimaryNode,
-			&rec.ReplicaNode,
-			&rec.CreatedAt,
-			&rec.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		out = append(out, rec)
-	}
-	return out, rows.Err()
-}
-
 func (p *Postgres) ListByOwnerWithFilters(ctx context.Context, ownerID, permission, visibility, keyQuery string, limit, offset int) ([]model.ObjectRecord, error) {
 	rows, err := p.db.Query(ctx, `
 		SELECT o.id, o.owner_user_id, o.object_key, COALESCE(o.content_type, ''), o.size_bytes, COALESCE(o.etag, ''),
@@ -274,14 +235,6 @@ func (p *Postgres) CountByOwnerWithFilters(ctx context.Context, ownerID, permiss
 	return total, nil
 }
 
-func (p *Postgres) MarkAccessAudit(ctx context.Context, objectID, ownerID, action, status, sourceIP, userAgent string) error {
-	_, err := p.db.Exec(ctx, `
-		INSERT INTO object_access_audit (id, object_id, owner_user_id, action, status, source_ip, user_agent, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-	`, uuid.New(), nullableUUID(objectID), nullableUUID(ownerID), action, status, sourceIP, userAgent)
-	return err
-}
-
 func (p *Postgres) SetPermissionByOwnerAndKey(ctx context.Context, ownerID, objectKey, permission string) (bool, error) {
 	tag, err := p.db.Exec(ctx, `
 		UPDATE objects
@@ -292,19 +245,4 @@ func (p *Postgres) SetPermissionByOwnerAndKey(ctx context.Context, ownerID, obje
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
-}
-
-func nullableUUID(v string) any {
-	if v == "" {
-		return nil
-	}
-	id, err := uuid.Parse(v)
-	if err != nil {
-		return nil
-	}
-	return id
-}
-
-func (p *Postgres) NowUTC() time.Time {
-	return time.Now().UTC()
 }

@@ -81,28 +81,9 @@ func New(cfg config.Config) (*Server, error) {
 	httpHandler.RegisterRoutes(mux)
 
 	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-cleanupCtx.Done():
-				return
-			case <-ticker.C:
-			}
-			for i := 0; i < 64; i++ {
-				found, err := repo.CollectOne(cleanupCtx, objectService.DeleteReplica)
-				if err != nil {
-					log.Printf("object cleanup: %v", err)
-					break
-				}
-				if !found {
-					break
-				}
-			}
-		}
-	}()
-	return &Server{stopCleanup: stopCleanup,
+	go collectOldVersions(cleanupCtx, repo, objectService)
+	return &Server{
+		stopCleanup: stopCleanup,
 		http: &http.Server{
 			Addr:         ":" + cfg.Port,
 			Handler:      mux,
@@ -113,4 +94,26 @@ func New(cfg config.Config) (*Server, error) {
 		db:  db,
 		rdb: rdb,
 	}, nil
+}
+
+func collectOldVersions(ctx context.Context, repo *repository.Postgres, objectService *service.Service) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for range 64 {
+			found, err := repo.CollectOne(ctx, objectService.DeleteReplica)
+			if err != nil {
+				log.Printf("object cleanup: %v", err)
+				break
+			}
+			if !found {
+				break
+			}
+		}
+	}
 }
